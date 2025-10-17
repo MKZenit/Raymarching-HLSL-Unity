@@ -44,21 +44,17 @@ StructuredBuffer<Strike> InputGeometrySlash;
 
 RWTexture2D<float> StrikeField;
 
-struct GT{
-    uint Structural; // Any abstract structure
-    uint Sphere;
-    uint Box;
-    uint Stab;
-    uint Slash;
-    // uint Volume;
-    // uint Blow;
-    // uint Light;
-};
-const GT GeometryType = {0,1,2,3,4};
+// enum are not supported :
+#define GT_Structural -1
+#define GT_Skybox 0
+#define GT_Sphere 1
+#define GT_Box 2
+#define GT_Stab 3
+#define GT_Slash 4
 
 struct Geometry{
     int id;
-    uint type;
+    int type; // Any GT_ value
     float distance;
 };
 struct Transform{
@@ -98,13 +94,12 @@ float TriPrism_SDF( float3 position, Strike strike)
 {
     // Note : Cylinder with 3-vertices bases
     float3 q = abs(position-strike.position);
-    return max(q.z-strike.depth,max(q.x*0.866025+position.y*0.5,-position.y)-strike.width*0.5);
+    return max(q.z-strike.depth,max(q.x*0.866025+(position.y-strike.position.y)*0.5,-(position.y-strike.position.y))-strike.width*0.5);
 }
 
 float SphericCone_SDF( float3 position, Strike strike)
 {
     // Note : A cone which base' width is given by an angle
-    // "c" is the sin/cos of the angle
     float3 diffPos = position-strike.position;
     float2 sc = float2(sin(strike.width), cos(strike.width));
     float2 q = float2( length(diffPos.xz), diffPos.y );
@@ -113,6 +108,52 @@ float SphericCone_SDF( float3 position, Strike strike)
     return max(l,m*sign(sc.y*q.x-sc.x*q.y));
 }
 
+// ---------------------------- SDF primitives normals -----------------------------
+
+float3 Sphere_SDFNormal(float3 position, Sphere sphere){
+    return normalize(position-sphere.position);
+}
+
+float3 Box_SDFNormal(float3 position, Box box){
+    float3 diffPos = position-box.position;
+    float3 q = abs(diffPos);
+    return (q.x>box.dimension.x)?(float3(sign(diffPos.x),0,0)):(
+           (q.y>box.dimension.y)?(float3(0,sign(diffPos.y),0)):(
+           (q.z>box.dimension.z)?(float3(0,0,sign(diffPos.z))):float3(0.333333,0.333333,0.333333) 
+           ));
+}
+
+float3 TriPrism_SDFNormal( float3 position, Strike strike)
+{
+    // Note : Cylinder with 3-vertices bases
+    const float3 geoNormal = normalize(float3(0.866025,0.5,0));
+    float3 diffPos = position-strike.position;
+    float3 q = abs(diffPos);
+
+    return (diffPos.y<-strike.width*0.5)? float3(0,-1,0)
+         : ( (q.z>strike.depth)? float3(0,0,sign(diffPos.z))
+         : geoNormal*float3(sign(diffPos.x),1,1) );
+    
+}
+
+float3 SphericCone_SDFNormal( float3 position, Strike strike)
+{
+    // Note : A cone which base' width is given by an angle
+    float2 sc = float2(sin(strike.width), cos(strike.width));
+    float heightLimit = (1-(1-sc.y))*strike.depth;
+    float3 diffPos = position-strike.position;
+    float posHeight = diffPos.y;
+    float3 normalSphere = normalize(diffPos);
+
+    float2 geoVectAngles = -float2(asin(normalSphere.x), asin(normalSphere.z));
+    float3 geoVect = normalize(float3(geoVectAngles.x*strike.width, heightLimit/strike.depth, geoVectAngles.y*strike.width));
+    float3 projectionOnGeoVec = dot(diffPos,geoVect)*geoVect;
+    float3 normalCone = normalize(projectionOnGeoVec-diffPos);
+
+    return (diffPos.y>heightLimit)? normalSphere : normalCone;
+}
+
+
 // -------------------------------- SDF main ---------------------------------
 
 uint spheres_count, boxes_count;
@@ -120,40 +161,62 @@ uint slashes_count, stabs_count;
 
 void GeometrySDF(in float3 position, inout float distanceSDF, inout Geometry closestGeometry){
     
+    float previousDistanceSDF = _maxDistanceThreshold;
+
     // Spheres
     for(uint index_sphere=0; index_sphere<spheres_count; index_sphere++){
+        previousDistanceSDF = distanceSDF;
         distanceSDF = Union_SDF(distanceSDF, Sphere_SDF(position, InputGeometrySphere[index_sphere]) );
+        if(previousDistanceSDF>distanceSDF){
+            closestGeometry.id = index_sphere;
+        }
     }
-
+    closestGeometry.type = GT_Sphere; // Note : first geometry hence has to be the closest at the time
+    
+    float pre_box_distance = distanceSDF;
     // Boxes
     for(uint index_box=0; index_box<boxes_count; index_box++){
+        previousDistanceSDF = distanceSDF;
         distanceSDF = Union_SDF(distanceSDF, Box_SDF(position, InputGeometryBox[index_box]));
+        if(previousDistanceSDF>distanceSDF){
+            closestGeometry.id = index_box;
+        }
     }
-
+    if(pre_box_distance>distanceSDF)
+        closestGeometry.type = GT_Box;
+    
     closestGeometry.distance = distanceSDF;
-
-    // Unitilized parameters
-    closestGeometry.id = 0;
-    closestGeometry.type = GeometryType.Structural;
 }
 
 void StrikeSDF(float3 position, inout float distanceSDF, in Geometry closestGeometry, inout Geometry closestStrike){
     closestStrike.distance = _maxDistanceThreshold;
+    float previousDistanceSDF;
 
     // Slashes
-    for(uint index_slash=0; index_slash<slashes_count; index_slash++)
+    for(uint index_slash=0; index_slash<slashes_count; index_slash++){
+        previousDistanceSDF = closestStrike.distance;
         closestStrike.distance = Union_SDF(closestStrike.distance, TriPrism_SDF(position, InputGeometrySlash[index_slash]) );
+        if(previousDistanceSDF>closestStrike.distance){
+            closestStrike.id = index_slash;
+        }
+    }
+    closestStrike.type = GT_Slash; // Note : first geometry hence has to be the closest at the time
 
+    float pre_stab_distance = closestStrike.distance;
     // Stabs
-    for(uint index_stab=0; index_stab<stabs_count; index_stab++)
+    for(uint index_stab=0; index_stab<stabs_count; index_stab++){
+        previousDistanceSDF = closestStrike.distance;
         closestStrike.distance = Union_SDF(closestStrike.distance, SphericCone_SDF(position, InputGeometryStab[index_stab]) );
-        
+        if(previousDistanceSDF>closestStrike.distance){
+            closestStrike.id = index_stab;
+        }
+    }
+    if(pre_stab_distance>closestStrike.distance){
+        closestStrike.type = GT_Stab;
+    }
+
     //distanceSDF = Subtraction_SDF(distanceSDF, closestStrike.distance);
     distanceSDF = Union_SDF(distanceSDF, closestStrike.distance);
-
-    // Unitilized parameters
-    closestStrike.id = 0;
-    closestStrike.type = GeometryType.Structural;
 }
 
 
@@ -172,27 +235,35 @@ void ComputeSDF(float3 position, inout float distanceSDF, inout sdfComputeOutput
     GeometrySDF(position, distanceSDF, sdfClosestOutput.geometry);
 
     StrikeSDF(position, distanceSDF, sdfClosestOutput.geometry, sdfClosestOutput.strike);
-    
-}
-float ComputeSDF(float3 position, uint2 id){
-    
-    float distanceSDF;
-    sdfComputeOutput sdfOutput;
 
-    ComputeSDF(position, distanceSDF, sdfOutput, id);
-
-    return distanceSDF;
 }
 
-float3 NormalSDF(float3 p, uint2 id){
-    const float alpha = _minDistanceThreshold*_testParameter;
-    float3 app = p+alpha;
-    float3 amp = p-alpha;
-    return normalize( float3(
-        ComputeSDF(float3(app.x, p.yz),id)     - ComputeSDF(float3(amp.x, p.yz),id),
-        ComputeSDF(float3(p.x, app.y, p.z),id) - ComputeSDF(float3(p.x, amp.y, p.z),id),
-        ComputeSDF(float3(p.xy, app.z),id)     - ComputeSDF(float3(p.xy, amp.z),id)
-        ) );
+float3 NormalSDF(float3 position, in sdfComputeOutput sdfClosestOutput, uint2 id){
+    float3 normal = float3(0,0,0);
+
+    int closestOverall = (sdfClosestOutput.geometry.distance<sdfClosestOutput.strike.distance)? 
+              ( (sdfClosestOutput.geometry.distance>=_maxDistanceThreshold)? GT_Skybox : sdfClosestOutput.geometry.type )
+            : ( (  sdfClosestOutput.strike.distance>=_maxDistanceThreshold)? GT_Skybox : sdfClosestOutput.strike.type   );
+    
+    switch(closestOverall){
+    //  case GT_Structural : normal = float3(0,0,0);
+        case GT_Skybox:
+            normal = float3(0.333333,0.333333,0.333333);
+            break;
+        case GT_Sphere:
+            normal = Sphere_SDFNormal(position, InputGeometrySphere[sdfClosestOutput.geometry.id]);
+            break;
+        case GT_Box:
+            normal = Box_SDFNormal(position, InputGeometryBox[sdfClosestOutput.geometry.id]);
+            break;
+        case GT_Slash:
+            normal = TriPrism_SDFNormal(position, InputGeometrySlash[sdfClosestOutput.strike.id]);
+            break;
+        case GT_Stab:
+            normal = SphericCone_SDFNormal(position, InputGeometryStab[sdfClosestOutput.strike.id]);
+            break;
+    }
+    return sign(sdfClosestOutput.geometry.distance)*normal;
 }
 
 // ------------------------------------------- Kernels ----------------------------------------------
@@ -226,14 +297,24 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     }
     
 
-    float3 normal = NormalSDF(curPosition, id.xy);
-    
-    float3 directionalLightDir = normalize(float3(0.5,0.5,1));
-    float3 blinnPhongDiffuseLighting = dot(normal, -directionalLightDir);
+    float3 normal;
+    if(steps==_maxSteps){
+        normal = float3(0,0,0);
+    }else{
+        normal = NormalSDF(curPosition, sdfClosestOutput, id.xy);
+    }
+
+    const float3 directionalLightDir = normalize(float3(0.5,0.5,1));
+    float3 blinnPhongDiffuseLighting;
+    if(normal.x==0 && normal.y==0 && normal.z==0){
+        blinnPhongDiffuseLighting = 0;
+    }else{
+        blinnPhongDiffuseLighting = dot(normal, -directionalLightDir);
+    }
     float3 stepIterationFootprint = float3(min(sqrt(length(curPosition)),255)/255 ,1,1)*(steps/_maxSteps);
 
 	//Result[id.xy] = float4( stepIterationFootprint,0);
-    //Result[id.xy] = float4( abs(normalize(normal)),0 );
-    Result[id.xy] = float4( blinnPhongDiffuseLighting, 0);
+    Result[id.xy] = float4( abs(normalize(normal)),0 );
+    //Result[id.xy] = float4( blinnPhongDiffuseLighting, 0);
     //Result[id.xy] = float4( stepIterationFootprint.x,blinnPhongDiffuseLighting.yz, 0);
 }

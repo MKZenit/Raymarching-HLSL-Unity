@@ -53,7 +53,7 @@ public class LinkRaymarching: MonoBehaviour
 
         kernelIndex = _computeShader.FindKernel("CSMain");
 
-        Box[] Boxes = new Box[] { new() { position = new Vector3(4, 1, 9), rotation = new Vector4(0, 0, 0, 1), dimension = new Vector3(1, 1, 1)} };
+        Box[] Boxes = new Box[] { new() { position = new Vector3(4, 2.5f, 8.25f), rotation = new Vector4(0, 0, 0, 1), dimension = new Vector3(1, 1, 1)} };
         InputGeometryBox = new(GraphicsBuffer.Target.Structured, Boxes.Length, (1+3*3)*sizeof(float));
         InputGeometryBox.SetData(Boxes);
 
@@ -62,18 +62,21 @@ public class LinkRaymarching: MonoBehaviour
         InputGeometrySphere.SetData(Spheres);
 
 
-        Strike[] Slashes = new Strike[] { new() { position = new Vector3(0.25f, 0.25f, 7.5f), width = 1, rotation = new Vector3(0, 0, 0), depth = 2 } };
+        Strike[] Slashes = new Strike[] { new() { position = new Vector3(-4f, 3f, 7.5f), width = 1, rotation = new Vector3(0, 0, 0), depth = 2f },
+                                          new() { position = new Vector3(0.6f, -5.5f, 7.5f), width = 2, rotation = new Vector3(0, 0, 0), depth = 1f }};
         InputGeometrySlash = new(GraphicsBuffer.Target.Structured, Slashes.Length, 8 * sizeof(float));
         InputGeometrySlash.SetData(Slashes);
 
-        Strike[] Stabs = new Strike[] { new() { position = new Vector3(-0.5f, -0.5f, 9f), width = Mathf.PI/4f, rotation = new Vector3(0, 0, 0), depth = 2 },
-                                        new() { position = new Vector3(2.5f, -1f, 8f), width = Mathf.PI/6f, rotation = new Vector3(0, 0, 0), depth = 3 }};
+        Strike[] Stabs = new Strike[] { new() { position = new Vector3(-0.5f, -6f, 9f), width = Mathf.PI/5f, rotation = new Vector3(0, 0, 0), depth = 2f },
+                                        new() { position = new Vector3(3f, -1f, 7.5f), width = Mathf.PI/3.5f, rotation = new Vector3(0, 0, 0), depth = 3f },
+                                        new() { position = new Vector3(-3f, -7f, 9f), width = Mathf.PI/12f, rotation = new Vector3(0, 0, 0), depth = 6f },
+                                        new() { position = new Vector3(0f, 3f, 8f), width = Mathf.PI/3.55f, rotation = new Vector3(0, 0, 0), depth = 3f }};
         InputGeometryStab = new(GraphicsBuffer.Target.Structured, Stabs.Length, 8 * sizeof(float));
         InputGeometryStab.SetData(Stabs);
 
     }
 
-    void Update()
+    void FixedUpdate()
     {
         _computeShader.SetFloat("_testParameter", _testParameter);
 
