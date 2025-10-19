@@ -33,6 +33,7 @@ struct Strike
 
 const float4x4 WorldToViewMatrix;
 const float4x4 ProjectionMatrix;
+float3 rayDirection;
 
 // -------------------------------- SDF parameters ---------------------------------
 
@@ -53,7 +54,7 @@ RWTexture2D<float> StrikeField;
 #define GT_Slash 4
 
 struct Geometry{
-    int id;
+    uint id;
     int type; // Any GT_ value
     float distance;
 };
@@ -133,7 +134,6 @@ float3 TriPrism_SDFNormal( float3 position, Strike strike)
     return (diffPos.y<-strike.width*0.5)? float3(0,-1,0)
          : ( (q.z>strike.depth)? float3(0,0,sign(diffPos.z))
          : geoNormal*float3(sign(diffPos.x),1,1) );
-    
 }
 
 float3 SphericCone_SDFNormal( float3 position, Strike strike)
@@ -146,7 +146,7 @@ float3 SphericCone_SDFNormal( float3 position, Strike strike)
     float3 normalSphere = normalize(diffPos);
 
     float2 geoVectAngles = -float2(asin(normalSphere.x), asin(normalSphere.z));
-    float3 geoVect = normalize(float3(geoVectAngles.x*strike.width, heightLimit/strike.depth, geoVectAngles.y*strike.width));
+    float3 geoVect = normalize(float3(geoVectAngles.x, heightLimit/(strike.depth*strike.width), geoVectAngles.y));
     float3 projectionOnGeoVec = dot(diffPos,geoVect)*geoVect;
     float3 normalCone = normalize(projectionOnGeoVec-diffPos);
 
@@ -158,33 +158,73 @@ float3 SphericCone_SDFNormal( float3 position, Strike strike)
 
 uint spheres_count, boxes_count;
 uint slashes_count, stabs_count;
+uint backward_step_applied = 0;
 
 void GeometrySDF(in float3 position, inout float distanceSDF, inout Geometry closestGeometry){
     
-    float previousDistanceSDF = _maxDistanceThreshold;
+    float previousClosestDistance = closestGeometry.distance;
+    float lastClosestGeometryCurDistance = (closestGeometry.type==GT_Sphere)? Sphere_SDF(position, InputGeometrySphere[closestGeometry.id]) : Box_SDF(position, InputGeometryBox[closestGeometry.id]);
+    float secondClosestGeometryDistance;
 
     // Spheres
     for(uint index_sphere=0; index_sphere<spheres_count; index_sphere++){
-        previousDistanceSDF = distanceSDF;
-        distanceSDF = Union_SDF(distanceSDF, Sphere_SDF(position, InputGeometrySphere[index_sphere]) );
-        if(previousDistanceSDF>distanceSDF){
+        float distanceGeometry = Sphere_SDF(position, InputGeometrySphere[index_sphere]);
+
+        if(distanceGeometry<secondClosestGeometryDistance
+        && distanceGeometry>=distanceSDF)
+            secondClosestGeometryDistance = distanceSDF;
+
+        if(distanceGeometry<distanceSDF){
             closestGeometry.id = index_sphere;
+            secondClosestGeometryDistance = distanceSDF;
+            distanceSDF = distanceGeometry;
         }
+
     }
     closestGeometry.type = GT_Sphere; // Note : first geometry hence has to be the closest at the time
-    
-    float pre_box_distance = distanceSDF;
+    float pre_boxes_distanceSDF = distanceSDF;
+
     // Boxes
     for(uint index_box=0; index_box<boxes_count; index_box++){
-        previousDistanceSDF = distanceSDF;
-        distanceSDF = Union_SDF(distanceSDF, Box_SDF(position, InputGeometryBox[index_box]));
-        if(previousDistanceSDF>distanceSDF){
+        float distanceGeometry = Box_SDF(position, InputGeometryBox[index_box]);
+
+        if(distanceGeometry<secondClosestGeometryDistance
+        && distanceGeometry>=distanceSDF)
+            secondClosestGeometryDistance = distanceSDF;
+
+        if(distanceGeometry<distanceSDF){
             closestGeometry.id = index_box;
+            secondClosestGeometryDistance = distanceSDF;
+            distanceSDF = distanceGeometry;
         }
+
     }
-    if(pre_box_distance>distanceSDF)
+    if(pre_boxes_distanceSDF!=distanceSDF)
         closestGeometry.type = GT_Box;
     
+    if(distanceSDF!=lastClosestGeometryCurDistance){ // closest geometry has changed
+        /*
+        if(backward_step_applied){
+            backward_step_applied = 0;// dichotomic search backward step
+            distanceSDF = -distanceSDF;
+        }else
+            backward_step_applied = 1;
+        */
+    }
+    else{ // closest geometry is the same
+        if(lastClosestGeometryCurDistance<previousClosestDistance){ // geometry gets closer : dynamic step
+            distanceSDF = min(secondClosestGeometryDistance, distanceSDF);//*(lastClosestGeometryCurDistance/previousClosestDistance));
+        }
+        else{ // geometry gets away : skipping
+            // for now, it has to get away because it has been passed, then skip it.
+            //      Not necessarily true when dichotomic search will be implemented
+            distanceSDF = secondClosestGeometryDistance; // ignores the closestGeometry
+            // however : does not change much when near edges of both two geometry intersecting,
+            //              because the secondClosest would alternate between both geometries
+            // ISSUE : here, when having skipped a geometry, one that follows is impacted in some way -----------------
+        }
+    }
+
     closestGeometry.distance = distanceSDF;
 }
 
@@ -222,23 +262,23 @@ void StrikeSDF(float3 position, inout float distanceSDF, in Geometry closestGeom
 
 // -------------------------------- Main parameters ---------------------------------
 
-struct sdfComputeOutput{
+struct SdfComputeOutput{
     Geometry geometry;
     Geometry strike;
 };
 
 // -------------------------------- Main functions ---------------------------------
 
-void ComputeSDF(float3 position, inout float distanceSDF, inout sdfComputeOutput sdfClosestOutput, uint2 id){
+void ComputeSDF(float3 position, inout float distanceSDF, inout SdfComputeOutput sdfClosestOutput, uint2 id){
     
     distanceSDF = _maxDistanceThreshold;
     GeometrySDF(position, distanceSDF, sdfClosestOutput.geometry);
 
-    StrikeSDF(position, distanceSDF, sdfClosestOutput.geometry, sdfClosestOutput.strike);
+    //StrikeSDF(position, distanceSDF, sdfClosestOutput.geometry, sdfClosestOutput.strike);
 
 }
 
-float3 NormalSDF(float3 position, in sdfComputeOutput sdfClosestOutput, uint2 id){
+float3 NormalSDF(float3 position, in SdfComputeOutput sdfClosestOutput, uint2 id){
     float3 normal = float3(0,0,0);
 
     int closestOverall = (sdfClosestOutput.geometry.distance<sdfClosestOutput.strike.distance)? 
@@ -248,7 +288,7 @@ float3 NormalSDF(float3 position, in sdfComputeOutput sdfClosestOutput, uint2 id
     switch(closestOverall){
     //  case GT_Structural : normal = float3(0,0,0);
         case GT_Skybox:
-            normal = float3(0.333333,0.333333,0.333333);
+            normal = float3(0.35,0.3,0.35);
             break;
         case GT_Sphere:
             normal = Sphere_SDFNormal(position, InputGeometrySphere[sdfClosestOutput.geometry.id]);
@@ -271,7 +311,7 @@ float3 NormalSDF(float3 position, in sdfComputeOutput sdfClosestOutput, uint2 id
 [numthreads(32,32,1)]
 void CSMain (uint3 id : SV_DispatchThreadID)
 {
-    float3 rayNormal = normalize(float3(id.x-0.5*texturePixelSize.x, id.y-0.5*texturePixelSize.y, (texturePixelSize.x+texturePixelSize.y)*0.25));
+    rayDirection = normalize(float3(id.x-0.5*texturePixelSize.x, id.y-0.5*texturePixelSize.y, (texturePixelSize.x+texturePixelSize.y)*0.25));
     float distanceSDF;
     float3 curPosition = float3(0,0,0);
     
@@ -282,8 +322,13 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     InputGeometrySlash.GetDimensions(slashes_count,slashes_stride);
     InputGeometryStab.GetDimensions(stabs_count,stabs_stride);
 
-
-    sdfComputeOutput sdfClosestOutput;
+    SdfComputeOutput sdfClosestOutput;
+    sdfClosestOutput.geometry.id = 0;
+    sdfClosestOutput.geometry.type = GT_Skybox;
+    sdfClosestOutput.geometry.distance = _maxDistanceThreshold;
+    sdfClosestOutput.strike.id = 0;
+    sdfClosestOutput.strike.type = GT_Skybox;
+    sdfClosestOutput.strike.distance = _maxDistanceThreshold;
 
     int steps;
     for(steps=0; steps<_maxSteps; steps++){
@@ -293,7 +338,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         // position verification & update
         if((distanceSDF<=_minDistanceThreshold)          // Too close from an obstacle
         || (distanceSDF>=_maxDistanceThreshold)) break;  // Too far from an obstacle
-        curPosition += rayNormal*distanceSDF;
+        curPosition += rayDirection*distanceSDF;
     }
     
 
@@ -312,9 +357,10 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         blinnPhongDiffuseLighting = dot(normal, -directionalLightDir);
     }
     float3 stepIterationFootprint = float3(min(sqrt(length(curPosition)),255)/255 ,1,1)*(steps/_maxSteps);
-
-	//Result[id.xy] = float4( stepIterationFootprint,0);
-    Result[id.xy] = float4( abs(normalize(normal)),0 );
-    //Result[id.xy] = float4( blinnPhongDiffuseLighting, 0);
-    //Result[id.xy] = float4( stepIterationFootprint.x,blinnPhongDiffuseLighting.yz, 0);
+	
+    // Result[id.xy] = float4( sdfClosestOutput.geometry.distance, sdfClosestOutput.geometry.id*255/((sdfClosestOutput.geometry.type==GT_Sphere)?spheres_count:boxes_count), sdfClosestOutput.geometry.type*50, 0);
+    // Result[id.xy] = float4( stepIterationFootprint,0);
+    Result[id.xy] = float4( abs(normalize(normal)),0);
+    // Result[id.xy] = float4( blinnPhongDiffuseLighting, 0);
+    // Result[id.xy] = float4( stepIterationFootprint.x,blinnPhongDiffuseLighting.yz, 0);
 }
