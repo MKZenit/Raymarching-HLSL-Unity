@@ -14,9 +14,11 @@ public class LinkRaymarching: MonoBehaviour
     public float _maxDistanceThreshold;
     [Range(1, 250)]
     public int _maxSteps;
+    [Range(0f, 1f)]
+    public float _extreme_angle_threshold;
 
     [Header("Test parameter")]
-    [Range(0.1f,4f)]
+    [Range(-4f,4f)]
     public float _testParameter;
 
 
@@ -53,11 +55,15 @@ public class LinkRaymarching: MonoBehaviour
 
         kernelIndex = _computeShader.FindKernel("CSMain");
 
-        Box[] Boxes = new Box[] { new() { position = new Vector3(4, 2.5f, 8.25f), rotation = new Vector4(0, 0, 0, 1), dimension = new Vector3(1, 1, 1)} };
+        Box[] Boxes = new Box[] { new() { position = new Vector3(4, 2.5f, 8.25f), rotation = new Vector4(0, 0, 0, 1), dimension = new Vector3(1, 1, 1)},
+                                  new() { position = new Vector3(4.5f, 3.5f, 7.25f), rotation = new Vector4(0, 0, 0, 1), dimension = new Vector3(1, 1.25f, 1.4f)},
+                                  new() { position = new Vector3(1f, 1.3f, 9.25f), rotation = new Vector4(0, 0, 0, 1), dimension = new Vector3(0.5f, 0.75f, 0.75f)} };
         InputGeometryBox = new(GraphicsBuffer.Target.Structured, Boxes.Length, (1+3*3)*sizeof(float));
         InputGeometryBox.SetData(Boxes);
 
-        Sphere[] Spheres = new Sphere[] { new() { position = new Vector3(-0.35f, -0.35f, 9.5f), distance = 0.75f }, new() { position = new Vector3(0, 0, 10), distance = 1f }, new() { position = new Vector3(0, 2, 10), distance = 1f } };
+        Sphere[] Spheres = new Sphere[] { new() { position = new Vector3(-0.35f, -0.35f, 9.5f), distance = 0.75f }, 
+                                          new() { position = new Vector3(0, 0, 10), distance = 1f },
+                                          new() { position = new Vector3(0, 2, 10), distance = 1f } };
         InputGeometrySphere = new(GraphicsBuffer.Target.Structured, Spheres.Length, 4 * sizeof(float));
         InputGeometrySphere.SetData(Spheres);
 
@@ -80,6 +86,7 @@ public class LinkRaymarching: MonoBehaviour
     {
         _computeShader.SetFloat("_testParameter", _testParameter);
 
+        _computeShader.SetFloat("_extreme_angle_threshold", _extreme_angle_threshold);
         _computeShader.SetFloat("_minDistanceThreshold", _minDistanceThreshold);
         _computeShader.SetFloat("_maxDistanceThreshold", _maxDistanceThreshold);
         _computeShader.SetFloat("_maxSteps", _maxSteps);

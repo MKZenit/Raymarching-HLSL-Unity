@@ -6,6 +6,7 @@ RWTexture2D<float4> Result;
 
 const float _testParameter;
 
+const float _extreme_angle_threshold;
 const float _minDistanceThreshold;
 const float _maxDistanceThreshold;
 const float _maxSteps;
@@ -33,6 +34,7 @@ struct Strike
 
 const float4x4 WorldToViewMatrix;
 const float4x4 ProjectionMatrix;
+float3 rayDirection;
 
 // -------------------------------- SDF parameters ---------------------------------
 
@@ -158,33 +160,44 @@ float3 SphericCone_SDFNormal( float3 position, Strike strike)
 
 uint spheres_count, boxes_count;
 uint slashes_count, stabs_count;
+uint backward_step_applied = 0;
 
 void GeometrySDF(in float3 position, inout float distanceSDF, inout Geometry closestGeometry){
     
-    float previousDistanceSDF = _maxDistanceThreshold;
+    float previousClosestDistance = closestGeometry.distance;
+    float lastClosestGeometryCurDistance = (closestGeometry.type==GT_Sphere)? Sphere_SDF(position, InputGeometrySphere[closestGeometry.id]) : Box_SDF(position, InputGeometryBox[closestGeometry.id]);
+    float secondClosestGeometryDistance;
 
     // Spheres
     for(uint index_sphere=0; index_sphere<spheres_count; index_sphere++){
-        previousDistanceSDF = distanceSDF;
-        distanceSDF = Union_SDF(distanceSDF, Sphere_SDF(position, InputGeometrySphere[index_sphere]) );
-        if(previousDistanceSDF>distanceSDF){
-            closestGeometry.id = index_sphere;
+        float geometryAngle = dot(Sphere_SDFNormal(position, InputGeometrySphere[index_sphere]), rayDirection);
+        if(geometryAngle<-_extreme_angle_threshold){ // backface culling & extreme angles
+            float distanceGeometry = Sphere_SDF(position, InputGeometrySphere[index_sphere]);
+
+            if(distanceGeometry<distanceSDF){
+                closestGeometry.id = index_sphere;
+                distanceSDF = distanceGeometry;
+            }
         }
     }
     closestGeometry.type = GT_Sphere; // Note : first geometry hence has to be the closest at the time
-    
-    float pre_box_distance = distanceSDF;
+    float pre_boxes_distanceSDF = distanceSDF;
+
     // Boxes
     for(uint index_box=0; index_box<boxes_count; index_box++){
-        previousDistanceSDF = distanceSDF;
-        distanceSDF = Union_SDF(distanceSDF, Box_SDF(position, InputGeometryBox[index_box]));
-        if(previousDistanceSDF>distanceSDF){
-            closestGeometry.id = index_box;
+        float geometryAngle = dot(Box_SDFNormal(position, InputGeometryBox[index_box]), rayDirection);
+        if(geometryAngle<-_extreme_angle_threshold){ // backface culling & extreme angles
+            float distanceGeometry = Box_SDF(position, InputGeometryBox[index_box]);
+
+            if(distanceGeometry<distanceSDF){
+                closestGeometry.id = index_box;
+                distanceSDF = distanceGeometry;
+            }
         }
     }
-    if(pre_box_distance>distanceSDF)
+    if(pre_boxes_distanceSDF!=distanceSDF)
         closestGeometry.type = GT_Box;
-    
+
     closestGeometry.distance = distanceSDF;
 }
 
@@ -234,7 +247,7 @@ void ComputeSDF(float3 position, inout float distanceSDF, inout sdfComputeOutput
     distanceSDF = _maxDistanceThreshold;
     GeometrySDF(position, distanceSDF, sdfClosestOutput.geometry);
 
-    StrikeSDF(position, distanceSDF, sdfClosestOutput.geometry, sdfClosestOutput.strike);
+    //StrikeSDF(position, distanceSDF, sdfClosestOutput.geometry, sdfClosestOutput.strike);
 
 }
 
@@ -271,7 +284,7 @@ float3 NormalSDF(float3 position, in sdfComputeOutput sdfClosestOutput, uint2 id
 [numthreads(32,32,1)]
 void CSMain (uint3 id : SV_DispatchThreadID)
 {
-    float3 rayNormal = normalize(float3(id.x-0.5*texturePixelSize.x, id.y-0.5*texturePixelSize.y, (texturePixelSize.x+texturePixelSize.y)*0.25));
+    rayDirection = normalize(float3(id.x-0.5*texturePixelSize.x, id.y-0.5*texturePixelSize.y, (texturePixelSize.x+texturePixelSize.y)*0.25));
     float distanceSDF;
     float3 curPosition = float3(0,0,0);
     
@@ -284,6 +297,12 @@ void CSMain (uint3 id : SV_DispatchThreadID)
 
 
     sdfComputeOutput sdfClosestOutput;
+    sdfClosestOutput.geometry.distance = _maxDistanceThreshold;
+    sdfClosestOutput.geometry.id = 0;
+    sdfClosestOutput.geometry.type = GT_Skybox;
+    sdfClosestOutput.strike.distance = _maxDistanceThreshold;
+    sdfClosestOutput.strike.id = 0;
+    sdfClosestOutput.strike.type = GT_Skybox;
 
     int steps;
     for(steps=0; steps<_maxSteps; steps++){
@@ -293,7 +312,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         // position verification & update
         if((distanceSDF<=_minDistanceThreshold)          // Too close from an obstacle
         || (distanceSDF>=_maxDistanceThreshold)) break;  // Too far from an obstacle
-        curPosition += rayNormal*distanceSDF;
+        curPosition += rayDirection*distanceSDF;
     }
     
 
