@@ -1,0 +1,340 @@
+#pragma kernel CSMain
+
+#include "libs/geometry/GeometryPrimitives.cginc"
+#include "libs/geometry/GeometryBuffers.cginc"
+#include "libs/geometry/GeometryType.cginc"
+#include "libs/sdf/Sdf.cginc"
+#include "libs/sdf/SdfNormal.cginc"
+#include "libs/sdf/SdfBlend.cginc"
+#include "libs/sdf/SdfUtilitary.cginc"
+#include "libs/FieldBuffers.cginc"
+#include "libs/math/MathUtils.cginc"
+#include "libs/Constants.cginc"
+#include "libs/CameraProperties.cginc"
+#include "libs/math/Quaternion.cginc"
+
+//#pragma enable_d3d11_debug_symbols
+//#pragma use_dxc // Do never remove that line and execute with compilation errors.
+
+// -------------------------------- Overall parameters & structs ---------------------------------
+const float _testParameter;
+
+const float _extreme_angle_threshold;
+const float _minDistanceThreshold;
+
+// -------------------------------- SDF main ---------------------------------
+
+int spheres_count, boxes_count, slashes_count, stabs_count;
+float totalDistanceTraveled;
+void OptimizedGeometrySDF(in float3 position, in float3 rayDirection, inout float distanceSDF, inout Geometry closestGeometry,
+    inout uint iterationCount, in int curStep)
+{
+    // Spheres
+    for (int index_sphere = 0; index_sphere < spheres_count; index_sphere++)
+    {
+        Sphere sphere = Spheres[index_sphere];
+        float3 relativeSpherePosition = position - sphere.positionRadius.xyz;
+        
+        if (SelfDot(Projection(relativeSpherePosition, rayDirection)) <= SquareSizeSphere(sphere)) // sphere encapsulation test
+        {
+            float3 sphere_normal = OTSphere_SDFNormal(relativeSpherePosition);
+            float geometryAngle = dot(sphere_normal, rayDirection);
+            
+            if (geometryAngle < -_extreme_angle_threshold) // backface culling & extreme angles
+            {
+                if (_enableIterationDebugStep && _iterationDebugStep == curStep || !_enableIterationDebugStep)
+                    iterationCount += 1;
+                float distanceGeometry = Sphere_SDF(position, sphere);
+
+                if (distanceGeometry < distanceSDF)
+                {
+                    if (_enableIterationDebugStep && _iterationDebugStep == curStep || !_enableIterationDebugStep)
+                        iterationCount += 4096;
+                    float3 planePosition = SpherePlanePosition(sphere, sphere_normal);
+                    float distanceEnhanced =
+                        abs(LinePlaneIntersectionCoef(sphere_normal, planePosition, rayDirection, CameraPosition)
+                        - totalDistanceTraveled); // plane intersection (convex) relaxation 
+                    if (distanceEnhanced > distanceGeometry)
+                        distanceSDF = min(distanceEnhanced, distanceSDF);
+                    else
+                        distanceSDF = distanceGeometry;
+                    closestGeometry.id = index_sphere;
+                    closestGeometry.type = GT_Sphere;
+                }
+            }
+        }
+    }
+
+    // Stabs
+    for (int index_stab = 0; index_stab < stabs_count; index_stab++)
+    {
+        Stab stab = Stabs[index_stab];
+        float3 relativeStabPosition = position - stab.position;
+        
+        if (SelfDot(Projection(relativeStabPosition, rayDirection)) <= SquareSizeSphericCone(stab)) // sphere encapsulation test
+        {
+            
+            /*if () // if far then compute fast rotation dependent sdf // enhanced capsule sdf
+            {
+                
+                if ()
+                {
+                }
+            
+            }
+            else
+            {*/
+
+                float3 rotated_position = rotate_vector(relativeStabPosition, q_conj(stab.rotation));
+        
+                float y = clamp(rotated_position.y, 0.0, stab.tdr.y);
+                float3 nCapsule = float3(rotated_position.x, rotated_position.y - y, rotated_position.z); // 0.5 should be the radius
+                float invR = rsqrt(SelfDot(rotated_position.xz));
+    
+                float3 stab_normal = OTSphericCone_SDFNormal(rotated_position, stab.tdr, nCapsule, invR);
+                float3 world_stab_normal = rotate_vector(stab_normal, stab.rotation);
+                float geometryAngle = dot(world_stab_normal, rayDirection);
+        
+                if (geometryAngle < -_extreme_angle_threshold) // backface culling & extreme angles
+                {
+            
+                    if (_enableIterationDebugStep && _iterationDebugStep == curStep || !_enableIterationDebugStep)
+                        iterationCount += 1;
+                    float distanceGeometry = OTSphericCone_SDF(rotated_position, stab.tdr, nCapsule, invR);
+               
+                    if (distanceGeometry < distanceSDF)
+                    {
+                        if (_enableIterationDebugStep && _iterationDebugStep == curStep || !_enableIterationDebugStep)
+                            iterationCount += 4096;
+                        float3 planePosition = SphericConePlanePosition(stab, stab_normal);
+                        float distanceEnhanced = abs(LinePlaneIntersectionCoef(
+                           world_stab_normal, planePosition, rayDirection, CameraPosition)
+                           - totalDistanceTraveled); //  plane intersection (convex) relaxation 
+                        if (distanceEnhanced > distanceGeometry)
+                            distanceSDF = Union_SDF(distanceSDF, distanceEnhanced);
+                        else
+                            distanceSDF = distanceGeometry;
+                    
+                        closestGeometry.id = index_stab;
+                        closestGeometry.type = GT_Stab;
+                    }
+                }
+            //}
+            
+        }
+    }
+    
+    // Boxes
+    for (int index_box = 0; index_box < boxes_count; index_box++)
+    {
+        Box box = Boxes[index_box];
+        float3 relativeBoxPosition = position - box.position;
+        
+        float squaredSizeGeometry = SquareSizeBox(box);
+        if (SelfDot(Projection(relativeBoxPosition, rayDirection)) <= squaredSizeGeometry) // sphere encapsulation test
+        {
+            float sizeGeometry = fsqrt(squaredSizeGeometry);
+            float sphereSDF = TSphere_SDF(relativeBoxPosition, sizeGeometry);
+            
+            if (sphereSDF > 0.75) // if "far enough" then compute a rotation independent sdf // enhanced sphere sdf
+            {
+                float3 sphere_normal = OTSphere_SDFNormal(relativeBoxPosition);
+                float geometryAngle = dot(sphere_normal, rayDirection);
+            
+                if (geometryAngle < -_extreme_angle_threshold) // backface culling & extreme angles
+                {
+                    if (_enableIterationDebugStep && _iterationDebugStep == curStep || !_enableIterationDebugStep)
+                        iterationCount += 1;
+
+                    if (sphereSDF < distanceSDF)
+                    {
+                        if (_enableIterationDebugStep && _iterationDebugStep == curStep || !_enableIterationDebugStep)
+                            iterationCount += 4096;
+                        float3 planePosition = TSpherePlanePosition(box.position, sizeGeometry, sphere_normal);
+                        float distanceEnhanced =
+                            abs(LinePlaneIntersectionCoef(sphere_normal, planePosition, rayDirection, CameraPosition)
+                            - totalDistanceTraveled); // plane intersection (convex) relaxation 
+                        if (distanceEnhanced > sphereSDF)
+                            distanceSDF = min(distanceEnhanced, distanceSDF);
+                        else
+                            distanceSDF = sphereSDF;
+                        
+                        closestGeometry.id = index_box;
+                        closestGeometry.type = GT_Box;
+                    }
+                }
+            
+            }
+            else
+            {
+                
+                float3 rotated_position = rotate_vector(relativeBoxPosition, q_conj(box.rotation));
+        
+                float3 precomputePosition = abs(rotated_position) - box.dimension;
+                float3 box_normal = OTBox_SDFNormal(precomputePosition, rotated_position);
+                float3 world_box_normal = rotate_vector(box_normal, box.rotation);
+                float geometryAngle = dot(world_box_normal, rayDirection);
+            
+                if (geometryAngle < -_extreme_angle_threshold) // backface culling & extreme angles
+                {
+                    if (_enableIterationDebugStep && _iterationDebugStep == curStep || !_enableIterationDebugStep)
+                        iterationCount += 1;
+                    float distanceGeometry = OTBox_SDF(precomputePosition);
+                
+                    if (distanceGeometry < distanceSDF)
+                    {
+                        if (_enableIterationDebugStep && _iterationDebugStep == curStep || !_enableIterationDebugStep)
+                            iterationCount += 4096;
+                        float3 planePosition = BoxPlanePosition(box, box_normal);
+                        float distanceEnhanced = abs(
+                            LinePlaneIntersectionCoef(world_box_normal, planePosition, rayDirection, CameraPosition)
+                            - totalDistanceTraveled); // plane intersection (convex) relaxation 
+                        if (distanceEnhanced > distanceGeometry)
+                            distanceSDF = Union_SDF(distanceSDF, distanceEnhanced);
+                        else
+                            distanceSDF = distanceGeometry;
+                    
+                        closestGeometry.id = index_box;
+                        closestGeometry.type = GT_Box;
+                    }
+                }
+            }
+            
+        }
+    }
+    
+    // Slashes
+    for (int index_slash = 0; index_slash < slashes_count; index_slash++)
+    {
+        Slash slash = Slashes[index_slash];
+        float3 relativeSlashPosition = position - slash.position;
+        
+        float invLen = rsqrt(1.0 + slash.dimensions.y * slash.dimensions.y);
+        float4 wdcs = float4(slash.dimensions.x * slash.dimensions.x, slash.dimensions.z * slash.dimensions.z, invLen, slash.dimensions.y * invLen);
+        
+        if (SelfDot(Projection(relativeSlashPosition, rayDirection)) <= SquareSizeTriPrism(wdcs))
+        {
+            
+            /*if () // if far then compute fast rotation dependent sdf // enhanced capsule sdf
+            {
+                
+                if ()
+                {
+                }
+            
+            }
+            else
+            {*/
+            
+                float3 rotated_position = rotate_vector(relativeSlashPosition, q_conj(slash.rotation));
+        
+                float3 slash_normal = OTTriPrism_SDFNormal(rotated_position, slash.dimensions.x, slash.dimensions.y, slash.dimensions.z, invLen, wdcs.zw);
+                float3 world_slash_normal = rotate_vector(slash_normal, slash.rotation);
+                float geometryAngle = dot(world_slash_normal, rayDirection);
+            
+                if (geometryAngle < -_extreme_angle_threshold)// backface culling & extreme angles
+                {
+            
+                    if (_enableIterationDebugStep && _iterationDebugStep == curStep || !_enableIterationDebugStep)
+                        iterationCount += 1;
+                    float distanceGeometry = OTTriPrism_SDF(rotated_position, slash.dimensions.x, slash.dimensions.y, slash.dimensions.z, invLen, wdcs.zw);
+            
+                    if (distanceGeometry < distanceSDF)
+                    {
+                        if (_enableIterationDebugStep && _iterationDebugStep == curStep || !_enableIterationDebugStep)
+                            iterationCount += 4096;
+                        float3 planePosition = TriPrismPlanePosition(slash, slash_normal);
+                        float distanceEnhanced = abs(LinePlaneIntersectionCoef(
+                            world_slash_normal, planePosition, rayDirection, CameraPosition)
+                            - totalDistanceTraveled); //  plane intersection (convex) relaxation 
+                        if (distanceEnhanced > distanceGeometry)
+                            distanceSDF = Union_SDF(distanceSDF, distanceEnhanced);
+                        else
+                            distanceSDF = distanceGeometry;
+                    
+                        closestGeometry.id = index_slash;
+                        closestGeometry.type = GT_Slash;
+                    }
+                }
+            //}
+            
+        }
+    }
+    
+    
+    
+    
+}
+
+
+// -------------------------------- Main parameters ---------------------------------
+
+struct sdfComputeOutput
+{
+    Geometry geometry;
+    bool isDestructive;
+};
+
+// -------------------------------- Main functions ---------------------------------
+
+void ComputeSDF(in float3 position, in float3 rayDirection, inout float distanceSDF, inout sdfComputeOutput sdfClosestOutput,
+    inout uint iterationCount, in int curStep)
+{
+    distanceSDF = _maxDistanceThreshold;
+    OptimizedGeometrySDF(position, rayDirection, distanceSDF, sdfClosestOutput.geometry, iterationCount, curStep);
+}
+
+// ------------------------------------------- Kernels ----------------------------------------------
+
+[numthreads(16, 16, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    float3 cameraRelativeThreadPosition = normalize(float3(id.x - 0.5 * RenderTextureSize.x, id.y - 0.5 * RenderTextureSize.y, (RenderTextureSize.x + RenderTextureSize.y) * 0.25));
+    
+    float3 curPosition = CameraPosition;
+    float3 rayDirection = normalize(cameraRelativeThreadPosition.x * CameraVectorX + cameraRelativeThreadPosition.y * CameraVectorY + cameraRelativeThreadPosition.z * CameraVectorZ * CameraFov);
+    
+    float distanceSDF;
+    totalDistanceTraveled = 0;
+    
+    sdfComputeOutput sdfClosestOutput;
+    sdfClosestOutput.geometry.id = 0;
+    sdfClosestOutput.geometry.type = GT_Skybox;
+    sdfClosestOutput.isDestructive = false;
+
+    int steps;
+    uint iterationCount = 0;
+    for (steps = 0; steps < _maxSteps; steps++)
+    {
+        distanceSDF = _maxDistanceThreshold;
+        
+        // distance updates
+        ComputeSDF(curPosition, rayDirection, distanceSDF, sdfClosestOutput, iterationCount, steps);
+        
+        // position update
+        totalDistanceTraveled += distanceSDF;
+        curPosition += rayDirection * distanceSDF;
+
+        // position verification
+        if (distanceSDF <= _minDistanceThreshold) // Too close from an obstacle
+            break;
+        else if (totalDistanceTraveled >= _maxDistanceThreshold) // Too far from an obstacle
+        {
+            totalDistanceTraveled = clamp(totalDistanceTraveled, 0, _maxDistanceThreshold);
+            sdfClosestOutput.geometry.id = 0;
+            sdfClosestOutput.geometry.type = GT_Skybox;
+            break;
+        }
+    }
+    
+    float3 normal = SDFNormal(curPosition, sdfClosestOutput.geometry);
+    if (sdfClosestOutput.isDestructive)
+        normal = -normal;
+    
+    DepthTex[id.xy] = totalDistanceTraveled;
+    GeometryTex[id.xy] = GeometryToUint(sdfClosestOutput.geometry.type, sdfClosestOutput.geometry.id);
+    NormalTex[id.xy] = (normal + 1) * 0.5;
+    IterationTex[id.xy] = iterationCount + (steps << 24);
+    
+    float lastDistanceSDF = distanceSDF;
+}

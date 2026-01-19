@@ -1,0 +1,196 @@
+#pragma kernel CSDebug
+
+#include "libs/geometry/GeometryPrimitives.cginc"
+#include "libs/geometry/GeometryBuffers.cginc"
+#include "libs/geometry/GeometryType.cginc"
+#include "libs/sdf/Sdf.cginc"
+#include "libs/sdf/SdfNormal.cginc"
+#include "libs/sdf/SdfBlend.cginc"
+#include "libs/math/MathUtils.cginc"
+#include "libs/math/Quaternion.cginc"
+#include "libs/Constants.cginc"
+#include "libs/FieldBuffers.cginc"
+#include "libs/CameraProperties.cginc"
+#include "libs/ColorUtilitary.cginc"
+
+// --------------------------------- Debug parameters ---------------------------------
+
+// Rendering modes enum
+#define RM_Result 0
+#define RM_Depth 1
+#define RM_Geometry 2
+#define RM_Normal 3
+#define RM_Iteration_Count 4
+#define RM_Iteration_Change 5
+#define RM_Iteration_Enclosing 6
+
+// Debug functionalities flags
+#define DF_GeometryHighlight 1
+#define DF_Plane 2
+#define DF_Zone 4
+
+const int _renderingMode; // Any RM_ value
+const float2 _debugGeometry; // type, id
+const int _debugFunctionalitiesFlags;
+
+const float3 _debugPlanePosition;
+const float3 _debugPlaneNormal;
+
+const float2 _debugZonePosition;
+const float _debugZoneRadius;
+const float _debugZoneOpacity;
+
+const int _maxIterationChange;
+const int _maxIterationEnclosing;
+
+// --------------------------------- Utilitary Debug ----------------------------------
+
+float3 ComputeDebugPlane(float3 projectedPosition, float2 _debugGeometry)
+{
+    Geometry g;
+    g.id = _debugGeometry.y;
+    g.type = _debugGeometry.x;
+    
+    //float sdf = GeometrySDF(projectedPosition, g);
+    //return float3(1,1,1)*( (sdf%1) + (sdf%8)/8 + (sdf%32)/32 )*0.333;
+    float3 sdfN = SDFNormal(projectedPosition, g);
+    return (sdfN + float3(1, 1, 1)) * 0.5;
+}
+
+// ----------------------------------- Debug Kernel -----------------------------------
+
+
+int boxes_count, spheres_count, slashes_count, stabs_count;
+[numthreads(16, 16, 1)]
+void CSDebug(uint3 id : SV_DispatchThreadID)
+{
+    float3 cameraRelativeThreadPosition = normalize(float3(id.x - 0.5 * RenderTextureSize.x, id.y - 0.5 * RenderTextureSize.y, (RenderTextureSize.x + RenderTextureSize.y) * 0.25));
+    float3 rayDirection = normalize(cameraRelativeThreadPosition.x * CameraVectorX + cameraRelativeThreadPosition.y * CameraVectorY + cameraRelativeThreadPosition.z * CameraVectorZ * CameraFov);
+    
+    float pixelDepth = DepthTexSRV[id.xy];
+    uint pixelGeometry = GeometryTexSRV[id.xy];
+    int pixelGeometryType, pixelGeometryId;
+    UintToGeometry(pixelGeometry, pixelGeometryType, pixelGeometryId);
+    
+    uint pixelIteration = IterationTexSRV[id.xy];
+    int pixelIterationCount, pixelIterationChange, pixelIterationEnclosing;
+    UintToIteration(pixelIteration, pixelIterationCount, pixelIterationChange, pixelIterationEnclosing);
+    
+    // Rendering Mode
+    float3 renderingColor;
+    switch (_renderingMode)
+    {
+        case RM_Result:
+            renderingColor = Result[id.xy].xyz;
+            break;
+        case RM_Depth:
+            renderingColor = float3(1, 1, 1) * (pixelDepth % 32) / 32;
+            break;
+        case RM_Geometry:
+            renderingColor = (pixelGeometryType == 0) ? float3(0.5, 0.5, 0.5):float3(pixelGeometryType, pixelGeometryId, 0);
+            break;
+        case RM_Normal:
+            renderingColor = NormalTexSRV[id.xy];
+            break;
+        case RM_Iteration_Count:
+            renderingColor = GetColorFromValue(pixelIterationCount, _maxSteps);
+            break;
+        case RM_Iteration_Change: // Count each time distanceSDF changes
+            renderingColor = GetColorFromValue(pixelIterationChange * (_enableIterationDebugStep ? _maxSteps * 0.25 : 1.0), _maxIterationChange);
+            break;
+        case RM_Iteration_Enclosing: // Count each time an enclosing test passes.
+            renderingColor = GetColorFromValue(pixelIterationEnclosing * (_enableIterationDebugStep ? _maxSteps * 0.4 : 1.0), _maxIterationEnclosing);
+            break;
+        default:
+            renderingColor = float3(0, 1, 1);
+            break;
+    }
+
+    int borderWidth = 2;
+    const bool _enableDebugGeometryHighlight = (_debugFunctionalitiesFlags & DF_GeometryHighlight) != 0;
+    const bool _enableDebugPlane = (_debugFunctionalitiesFlags & DF_Plane) != 0;
+    const bool _enableDebugZone = (_debugFunctionalitiesFlags & DF_Zone) != 0;
+    
+    float3 planeColor = float3(0.5, 0.5, 0.5);
+    
+    bool isHighlightZoneBorder = false;
+    bool isHighlightPlaneBorder = false;
+    
+    bool isZoneBorder = false;
+    bool isInsideZone = false;
+    bool isGeometryHit = pixelDepth < (_maxDistanceThreshold - 0.1);
+    
+    if (_enableDebugGeometryHighlight) // Geometry Border Highlight
+    {
+        uint neighborGeometry;
+        int geometryType, geometryId;
+        bool isNearAnotherGeometry = false;
+        
+        // Edge detection
+        if (pixelGeometryType == _debugGeometry.x && pixelGeometryId == _debugGeometry.y)
+        {
+            neighborGeometry = GeometryTexSRV[id.xy + int2(borderWidth, 0)]; // Beware clamping texture access
+            UintToGeometry(neighborGeometry, geometryType, geometryId);
+            isNearAnotherGeometry = isNearAnotherGeometry | ((geometryType != pixelGeometryType) | (geometryId != pixelGeometryId));
+            
+            neighborGeometry = GeometryTexSRV[id.xy + int2(0, -(borderWidth))];
+            UintToGeometry(neighborGeometry, geometryType, geometryId);
+            isNearAnotherGeometry = isNearAnotherGeometry | ((geometryType != pixelGeometryType) | (geometryId != pixelGeometryId));
+            
+            neighborGeometry = GeometryTexSRV[id.xy + int2(-(borderWidth), 0)];
+            UintToGeometry(neighborGeometry, geometryType, geometryId);
+            isNearAnotherGeometry = isNearAnotherGeometry | ((geometryType != pixelGeometryType) | (geometryId != pixelGeometryId));
+            
+            neighborGeometry = GeometryTexSRV[id.xy + int2(0, borderWidth)];
+            UintToGeometry(neighborGeometry, geometryType, geometryId);
+            isNearAnotherGeometry = isNearAnotherGeometry | ((geometryType != pixelGeometryType) | (geometryId != pixelGeometryId));
+        }
+        
+        if (isNearAnotherGeometry)
+            isHighlightZoneBorder = true;
+    }
+    if (_enableDebugPlane) // Debug Plane
+    {
+        float planeDistance = LinePlaneIntersectionCoef(_debugPlaneNormal, _debugPlanePosition, rayDirection, CameraPosition);
+        planeColor = (planeDistance > _maxDistanceThreshold || planeDistance < 0) ? float3(0.5, 0.5, 0.5) : ComputeDebugPlane(planeDistance * rayDirection + CameraPosition, _debugGeometry);
+        
+        // Edge detection
+        float _highlightWidth = 0.01;
+        if (abs(planeDistance - pixelDepth) < _highlightWidth)
+            isHighlightPlaneBorder = true;
+    }
+    if (_enableDebugZone) // Debug Zone
+    {
+        float debugZoneDistance = length(id.xy - _debugZonePosition);
+        float debugZoneRadius = _debugZoneRadius / 2 * RenderTextureSize.x;
+        
+        if (debugZoneDistance > debugZoneRadius - borderWidth / 2
+        && debugZoneDistance < debugZoneRadius + borderWidth / 2) // inside the border debug zone
+            isZoneBorder = true;
+        else if (debugZoneDistance < debugZoneRadius) // inside the debug zone
+            isInsideZone = true;
+        // else isInsideZone = false; already is the default value 
+    }
+    
+    // Data normalizing
+    if (_renderingMode == RM_Geometry) // Geometry ids are uint, hence entier values general > 1
+        renderingColor = renderingColor.xyx / float3(4, max(max(max(boxes_count, spheres_count), slashes_count), stabs_count), 4);
+    
+    float renderingColorOpacity = 1;
+    if (isZoneBorder)
+        renderingColor = float3(1, 0, 1);
+    else if (isHighlightZoneBorder)
+        renderingColor = float3(0, 1, 1);
+    else if (isHighlightPlaneBorder)
+        renderingColor = float3(1, 1, 0);
+    else if (_enableDebugZone | _enableDebugPlane)
+    {
+        if (!isGeometryHit)
+            renderingColor = planeColor; // Non-geometry
+        
+        if (isInsideZone) // Zone : overall transparency lerp
+            renderingColor = lerp(renderingColor, planeColor, _debugZoneOpacity);
+    }
+    Result[id.xy] = float4(renderingColor, renderingColorOpacity);
+    
+}

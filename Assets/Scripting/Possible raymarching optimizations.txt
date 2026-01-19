@@ -1,0 +1,509 @@
+﻿----- Note : Always delete TODO commentaries in commited files -----
+
+Note : the more constraints the more efficiency,
+    hence most optimizations will be applied specificaly per geometry
+
+--------------------------------------------------------------------
+
+// ---------------------- NEXT ----------------------- //
+- basic scene with floor/walls/ceil to test further light calculations and various optimizations from now on
+- concave optimizations (the same way as for convex)
+- reduce kernels (takes a texture or a buffer and after a recursive call, reduce to a single 
+- point light buffer
+- ambient occlusion
+- direct occlusion (shadows)
+--------------------------------------------------------------------
+
+TO BE CONTINUED : continue to optimize other geometries : stabs & slashes with simplified sdf on far distances.
+
+Time to extract functions from the main raymarching loop.
+idea :
+    extract each type of loop
+    so that they can be reused in other loops as simplified sdf.
+        especially SphereStepping & CapsuleStepping
+    
+idea : 
+    Use CapsuleSDF for both those geometries (SphericCone & TriPrism) when "far" from the geometry,
+    since it will most likely be overrided by a closer sdf calculus.
+    Compute a simple SphereSDF for a Box_SDF in that same case.
+do not bother maxing the efficiency of the capsule sdf for TriPrism, it is likely to be used only in depth not in height.
+
+change the order in which calculations are done,
+    sphere encapsulation coming first,
+    
+    compute sdf distance check with a sphere because it is very cheap and rotation independent,
+        if inside 
+            then approximate sdf distance check (eg. capsule sdf here),
+            if inside 
+                compute normal on that approximate sdf
+        if outside compute distance with sphere sdf.
+
+
+could it be useful to keep encapsulation test values for displacement ?
+    - if using capsules to group geometries then it will be needed to know this displacement to encapsulate the right space.
+
+TODO : after sphere encapsulation test : compute only a simplified sdf if not close enough.
+        - how does this enhance, the current enhanced sphere tracing :
+            - distant iterations and every iterations that comes at a fair distance of the geometry (but inside the encapsulation test)
+                do use the whole sdf version, unsimplified, this new version excludes other pixels inside the encapsulation test with fair cost.
+            - a problem is : for warps which threads take both branches, the sdf test is pretty much done twice in term of time computation,
+            but this is still worth (at least for large geometries).
+                it is only twice this geometry, fine since the only search does it at least 100 times.
+
+A capsule SDF & SDFNormal use both around half of exact same computation, hence enhanced iteration for it is suuuuuper cheap.
+
+commit
+
+test replacing stab.tdr.x by rcp(stab.tdr.x) or inversely in the sdf_normal.
+in order to give this as a precomputation in SquareSizeCenteredSphericCone.
+For symmetry compared to SquareSizeCenteredTriPrism.
+
+float SquareSizeCenteredSphericCone(Stab stab)
+{
+    float d = stab.tdr.y * 0.5 + min(stab.tdr.x * stab.tdr.y, stab.tdr.z);
+    return d * d;
+}
+float3 OTSphericCone_SDFNormal(float3 transformedPosition, float3 tdr, float3 nCapsule, float invR)
+{
+    return (transformedPosition.y > min(rcp(tdr.x) * tdr.z, tdr.y))
+       ? normalize(nCapsule)
+       : normalize(float3(transformedPosition.x * invR, -tdr.x, transformedPosition.z * invR));
+}
+
+the result of the condition is certainly inversible.
+
+commit
+
+Rename SphericalCone (into CapsuleCone ?) and add a parameter to it to manage the sword width (kind of a x scaling).
+
+Also use the same geometry for englobing TriPrism,
+    - which may also need to be renamed.
+
+Absolutely rename implicit geometries as their logic representation : slash & stab.
+So that it isn't to be thought about each time using their implicit geometries names.
+
+commit
+
+give TriPrism a consistent normal through space, it made a visual issue with capsules where pixels
+that should have collided with TriPrism collide with SphericCone(the capsule part of it) instead.
+certainly because normals for TriPrism isn't optimal in a geometric angle way. 
+(at some position in space, it will give back a normal that is far from the normal that should be in that space)
+    note : transformedPosition.z = transformedPosition.z-depth*0.5
+    allows to then use abs(transformedPosition.z) for symmetric computation.
+
+after correcting this issue, set the stabs loop in the very end 
+    then try putting stabs next to TriPrism, seed : stabs = 4956, slashes = 7685
+
+commit
+
+InterconnectedGpuResources :
+    there should be no use for a variable storing each texturesHolder, bcs those are stored dynamically in the textureHolderList.
+    moreover it makes it absolutely not flexible for instancing.
+
+commit
+
+count how many times a simplified geometry has been used instead of the complete one.
+    separately of the iteration counting.
+    more like "simplifiedGeometryCounts".
+    instead of "iterationCounts".
+another texture will be necessary anyways for further debug.
+
+it is possible to use exclusively simplified geometries with constant boolean conditions in a debug view to see if those are correctely computed.
+    With multiple "LOD"s for Sphere, then Capsule for 'previously SphericCone'.
+
+commit
+
+debug rendering mode : ordered grid X * X elements (X being the number of and sdfs to test)
+    each line is shifted by 1 so that each of those sdfs are at least once beside each other sdfs.
+    GeometryDebugger here influences every of those shifted geometries. (but should separate parameters from a sdf to another).
+
+commit
+
+Most iterations are wasted on stepping over spherical geometries.
+    However we know exactly when that happens :
+    - we have the kind of geometry being computed
+    - known normal from the geometry to the point
+    - geometry normal and distance
+    -> either a post computation after calculating the enhanced plane sdf
+    -> either bend the intersection plane the same way the geometry is bent
+        as an approximation bend the plane with a simple squared distance as it is further away from the geometry ?
+
+commit
+
+CameraFov & distorsion near edges :
+try using spheric lerping (slerp) instead of simple lerping (what is currently equivalently done),
+    - and modify adapt how CameraFov is used so that it actually determine the camera angle.
+    - moreover adapt how much mouseSensitivity there is in consideration of CameraFov.
+
+with some math exponent, it can match statically a certain screen ratio between x and y
+    bending rays direction a certain way, see image gallerie (phone). 17/01/2026
+
+Allow multiple screen ratio for const exponents set for those ratio, further optimizations screen related,
+    will be tested over those screen ratios exclusively.
+(eg. HD720 1280x720, HD1080 1920x1080, 2K 2048x1080, WQHD 2560x1440).
+enum int 2 x 4048
+note : QHD has exactly 2 times WQHD resolution.
+
+- just for debugging, also allow a square format, as it is more convenient for screen-resolution-independent optimizations.
+
+TO NOTE :
+To complete sides of an incomplete (non square) resolution, sides can be completed with visual effects.
+for instance, indicating the player health status and mana status and nefast status (overheat, mana poison, mana lack ...).
+
+or : since kernels will be called iteratively to render a given resolution;
+    - it is possible to include an additional paquet at some point, and consider its size when projecting previous subdivisions.
+    
+commit
+
+Update buffers linking with command buffer to only send buffers from CPU to GPU when those are updated.
+Hold that boolean information in the BufferHolder.
+Write it to false when linked by the customPipeline.
+Write it to true when modified by the application (eg. ScenePopulating)
+(does only improve passive scenes, does not help for dynamic scenes because when updated it delays the current frame by possibly a lot)
+    - an optimization here would be to delay the buffer filling as a post frame operation,
+        after blitting the current frame, the buffer is linked and next frame uses it.
+        however for high framerate (120fps) this still causes stuttering.
+        hence an async solution would be better, though it is not sure to know when datas are ready on GPU side.
+        nor how many frames it will take to show geometries.
+        Best remains to spawn geometries directly on GPU while limitating CPU-GPU communication, even if it puts little more strain on GPU.
+
+do the same for constants and textures.
+everything should only be linked when changed.
+
+commit
+
+// ------------------------------ NEXT ------------------------------- //
+
+see how CustomPipeline class could be better.
+It handles too much and will get hardly maintenable soon enough.
+Make it a parent class also used for asynchronous physics calculation.
+
+A CustomPipeline should be defined by its kernels management exclusively (managing a list of kernels and handling their modification for hot reloading).
+Miscellaneous calculation like FPS calculation should be externally handled through indirect call (eg. events).
+Building the pipeline should be handled by the class that implements a CustomPipeline because this is where custom behaviours are handled.
+
+commit
+
+idea : for now stabs & slashes are not coalescing GPU memory, hence their structs could instead store precomputation steps.
+to handle stab & slash precomputations steps :
+    - CPU transfers stabs & slashes buffers to GPU
+    - GPU precomputes tangente for stab angle (and later in that same step adds the geometries to the search structure)
+    - GPU uses all that precomputation to render the scene efficiently.
+    : need for a kernel that precomputes those values.
+    : later on, an other search structure could be used for very short living geometries such as particles.
+        : eg. metal sparks after a shock.
+
+    Spawning/Adding geometry should also be possible from GPU to GPU.
+    Same for Despawning/Destroying geometry.
+    This should be exclusively used on runtime, while CPU de/spawning should exclusively be used when loading a scene.
+
+idea : precompute geometry size (not squared), so that sphere encapsulation test is 1 cycle long.
+    moreover : implement a SoA layout instead of an AoS, for storing float4(geometry position, geometry size),
+        so that even if geometry is not coalescing and not memory efficient when computing the whole sdf,
+        the simplified sdfs will compensate for it largely, those will be the most used sdfs.
+
+        if only storing radius, this only serve for sphere sdf for now.
+        for capsule sdf (which is still a simplified sdf), all datas are needed because it is not rotation independent
+            (which is why sphere sdf is so fast and far less needy for data).
+        hence all other datas will be stored in a AoS layout 
+            (because all those remaining datas for a same struct are needed (hence has to be)loaded at once).
+
+some Physics could be handled by the CPU, at that point the CPU will be underused.
+same 
+
+commit
+
+condition to doing that : gather all utilitary/miscellaneous functions other than sdf & sdf_normal into a single .cginc file.
+    - eg. maxLength functions, planePosition functions, etc...
+
+can be cool to get a debug view for various optimization, such as : 
+    - sphere encapsulation test (to see how much it englobes geometries),
+    - iteration count, seen with a heat gradient (HSV color) (to see where optimizations are necessary)
+    - average empty space skipped, when the cone tracing optimization is implemented,
+        this value will be averaged per subdivision considering the average skipped space 
+        as the pixel occupancy multiplied by the actual skipped distance.
+
+- take into account an ulterior change from angle encapsulation test, to 
+- just add +1 each time a loop/condition is entered, store that value in a debugCountTexture per pixel.
+
+commit
+
+check stab & slash with sphere encapsulation test debug, especially slash.
+
+- consider a slash as enclosed in a box, how efficient a box encapsulation test would be compared to a sphere encapsulation test ?
+    it fits the slash shape far better than a sphere.
+    bool inside = (abs(v.x) <= ex) && (abs(v.y) <= ey) && (abs(v.z) <= ez);
+    - first verify if the point is inside the box, with a quite large treshold to avoid iterating uselessly empty skipping for the encapsulating box.
+    - if not inside but in the angle(more correct than sphere) encapsulation test(calculated for that box), 
+        then compute the actual sdf, but that of the box.
+
+commit
+
+- make a function extracting a structuredBuffer implicit geometry traversal and use it for each geometry type.
+    - refine all 4 geometries with this function to make the code more coherent.
+
+commit 
+
+- to optimize further, and to test ellipsoid vs sphere performances :
+    this is possible to make the sphere encapsulation test into an ellipsoid test
+    (except for spheres obviously because those are already perfectly encapsulated by a sphere encapsulation test).
+    This is what will be used later on anyways. It can be represented as 2x4 floats <= 2x sizeof(sphere) or computed on the fly.
+
+commit
+
+Explore :
+    - is it possible to store a structuredBuffer of textures ?
+        how can a lot of different textures be stored efficiently on GPU ? 
+        eg. to precompute noise maps with a seed that will ulterly be shared through network.
+
+commit
+
+- separate loops for Union and Subtract
+- do not forget to make the debug work for both
+
+commit 
+
+// ---------------------------------- NEXT ----------------------------------
+concave optimizations : 
+
+add geometry removal (global destructive geometry for now)
+- add destructive geometry buffers management (normal should be negated after calculation when destructive geometry is the closest implicit surface)
+- loop over destructive geometry and apply simple SDF_Subtract after computing SDF_Union (prefer it over min() for explicity) geometries 
+- add concave optimizations (think about how could such optimizations be included in BSH search structure before implementing them)
+
+commit
+
+// ---------------------------------- NEXT ----------------------------------
+lighting calculations : 
+
+- Explore : optimize sphere tracing using lipchitz relaxation factors.
+    In order to not have a very broke distance field for soft shadow calculation,
+    But an approximated and efficient result of it.
+
+extend customPipeline functionnality to support buffer reduce operations,
+such as summing up light screen contributions from multiple lights, to apply an attenuation factor based on it.
+
+- instead of creating a lot of kernel instance for a same kernel which should be called X times.
+Do a kernel component which has an attribut of type Array for storing different parameters for 
+    calling an iterative (eg. recursive) kernel.
+- call a kernel with properties such as (nom, valeur initial, valeur itération suivante)
+    The next value can be defined with a function.
+- reduce (size to search in is divided/multiplied by 2)
+- spatial screen subdivision (either divided/multiplied by 2 or 4 depending on needs)
+
+commit
+
+public static class LightBuffers
+{
+    public const string PointLight = nameof(PointLight);
+}
+
+(for later :)
+- extract SDF switch case, especially for light bounce calculation afterward.
+    - even if it has different optimizations, all sdf switch case and loops should be defined in sdf_... .cginc
+        not sdf.cginc because sdf optimizations also uses SDFNormal
+
+commit 
+
+a basic anti-aliasing would be to blend pixels when neighbour pixels aren't of the same geometry.
+
+simplify the use of Convolution, either do it a function or a kernel because it is an operation frequent to use.
+
+- anti-aliasing : 
+TAA blurs too much but is efficient.
+- should be applied only on fast changing screen areas.
+- MSAA which gives a netter look is achievable is considering : 
+    - projecting pixels with half a pixel shift, which can be computed after the last subdivision of cone/frustum projection,
+        subdividing a very last time.
+    - those added samples can be interpolated to get a low res MSAA
+- Should take into account the geometry curvature when stepping 
+- Should not be applied near edges, in other words when a near pixel had a different geometry (id or type).
+- A modern AA (such as TAA) should take into account discontinuities through time considering objects stillness or dynamism.
+Still objects should not have high variation such as crawling, very visible when moving camera slowly for such slow objects.
+- A valid change in intensity would be for dynamic illumination, especially when an object passes near a light at high speed,
+    creating a blinking effect on near objects.
+
+- Not catching a geometry on any pixel makes it totally ignored, not anti-aliased/blured with the result image.
+    Which can cause it to crawl relentlessly.
+    - biggest trouble for now.
+    - since even the lastest subdivision of a cone/frustum projection includes the whole area of pixel, 
+        it is possible to then compute a specific last version of projection that keeps track of close SDFs to blur them.
+
+
+commit
+
+add RaymarchingGpuResourcesNames.MainBuffers
+    add PointLightBuffer
+
+extend light calculation to a dynamic point light buffer
+make a scenePopulating light setup
+
+compute light calculation with an HDR buffer then divide by exposure in post process :
+    - light point calculation
+    - light halos
+    - reduce kernel -> multiply overall by 1/exposure
+
+implementation note :
+    - point light { position, range, intensity, color} 2x4 floats = 32 bytes
+    - GPU may precompute lights to combine close lights into a single light for computing light shadows & illumination
+      while keeping not modifying original light halos.
+    - it could be more "magical" that close lights tend to interpolate their own properties with closed lights.
+
+commit
+
+implement direct occlusion, hence also shadows.
+re-casting a SDF iteration loop, but optimize for getting a very approximate result.
+For the sake of continuity, a relaxation factor will be used instead of enhanced sphere tracing.
+
+commit
+
+implement ambient occlusion, same method as for light occlusion but sampling multiple directions around the normal.
+do include only one light bounce occlusion.
+do not store occlusion datas, instead compute a mathematical approximation on a whole geometry compared to the current position.
+    That can include to compute a bounce on that geometry in various directions, then average the occlusion factor.
+    for instance box may have up to 3 possible bounces depending on the number of faces visible.
+    spheres have infinite bounces but can be approximated with a certain number of samples depending on distance.
+or use a direct approximation for that geometry depending on light source direction and current position, hence not including indirect illumination on that geometry.
+
+commit
+
+NOTE ISSUE : most of previous optimizations cannot be used for non-convex geometries.
+    see for concave optimizations before considering this "issue",
+    there is possibly ways to combine both optimizations types to apply on every kind of geometries, 
+    including those with noise(or texture, etc..) kind of displacement.
+POSSIBLE CORRECTION : considering concave geometries as a convex geometry from the other side.
+advance of the distance of the enclosing sphere is sure.
+but on a sphere edge, a large distance is added uselessly.
+
+When including strike, it should be obvious if it is necessary (or at least better) to combine both "geometry" & "strike"
+to avoid, for instance, unnecessary conditions branchements.
+However consider that most strikes are to be removed not added to the scene.
+
+It may be good to not separate their geometryType in geometry and strike ?
+commit
+
+for math optimization, all functions should be tested separately, hence the above issue should be fixed first.
+
+math optimizations & GPU optimizations on current calculations : no SFU bottleneck, avoid branching (branchement prediction
+is limited on GPUs), approximation, limitate registers use, eventually use groupshared datas about collided geometries,
+permit independant calculation to happen in the same time.
+consider storing inverse distances too in some cases.
+
+commit
+
+IDEA : if textures are efficient to access nearest datas then it can be very efficient to store a search structure 
+
+
+------------------------------
+Analyze blinn-phong direct lighting, previously copy-pasted
+
+extend calculation to light points then 
+
+Implement indirect lighting :
+
+Find a simple equation that approximate a relaxation factor for each geometries.
+For instance : sphere may have such a relaxation factor as twice the distance for grasing angles (angle between the rayDirection and 
+the lightDir larger than the sphere radius), it would give pretty much as good performances as enhanced SphereTracing but gives a proper
+much more continuous distance to geometries. Which is necessary for implementing proper dynamic soft shadows.
+
+Return in Result the iterationStepFootprint of light indirect calculations to determine which is to be optimize as for the main kernel footprint.
+Also use the final intersecting geometry to determine part of the color of the pixel.
+-----------------------------
+
+Light Halos (some kind of "white noise" when looking at a light source directly),
+it can be represented as a star or some design.
+
+Implement some kind of light attenuation, enabling light intensity to surpass the 0,1 range, for effects like blinding, and more 
+complex light compositions.
+
+// ---------------------- STOP/NEXT ----------------------- //
+
+- Organize the following optimizations in order of importance.
+
+- only store on CPU, objects sphere encapsulation, not the actual datas,
+    for it to be the fastest possible while providing some usefull empty space skipping.
+    as a precomputation step of the rendering pipeline.
+
+care for sphere encapsulation to not be too large when working with slashes (since its height is controlled by angle, not having a limit):
+
+- Most physics should not be based on framerate.
+hence later : instantiate a custom pipeline that is executed at FixedUpdate rate, not each frame.
+    - make a common very customizable instance of CustomPipeline that permit both instances to work based on this same class.
+
+Add and manage a curvature variable for slash geometry.
+    - Direction + intensity (3+1 = Vector4)
+
+CameraFov for now do only zoom-in/zoom-out however do not actually enlarge the field of view.
+- maybe works with slerp or some kind of spherical rotation instead of casual displacement.
+Moreover, mouseSensitivity should be proportionnal to it because mouse movement are calculated using angles
+    hence a same rotation will be much larger compared to the total screen angle.
+
+- CPU/GPU for geometry communication :
+    GPU organize and sort those geometries and manage it internally, including its destruction.
+    ADD / UPDATE / DELETE are actions the CPU may order the GPU to execute.
+
+- Use inverse transformations the same way it for now uses inverse rotation to use the default geometry properties
+
+- Do a simple post effect settup kernel and support it in the search structure in an efficient way.
+To trigger a VFX system that manages particles spawning/update/removal.
+
+----------------------------------------- research ----------------------------------------
+
+- Is there a difference between storing datas in float + float3 compared to one float4 ? 
+    If so, try to optimize how much registers are used by densing datas in float4 especially in main raymarching loops.
+
+- What data to store in order to cache AABB separation axis ?
+
+- Learn more about the various gpu memories. (shared, managed/unmanaged, etc ...)
+
+- dot product == length squared, study its properties
+
+// -------------------------------------- SORTED ----------------------------------------------
+
+- Make a real little scene :
+Combine GeometryDebugger and ScenePopulating, because ScenePopulating should not manage other than real scene geometry.
+    - this is for now literaly debug geometries that are being displayed.
+    - Add ScenePopulator : Manages which scene is to be loaded and CPU-GPU linking through ApplicationGpuResource.
+    - Add GeometryLoader : loads a scene(or part of it) by converting a file into implicit geometries.
+    - Add GeometryCreator : - TODO : a scene to create geometry that is then stored into files,
+                                which can be loaded later on by a GeometryLoader.
+                                A file can be stored in two versions : explicit (slow but readable) / implicit (fast but unintelligible)
+- GeometryDebugger : enable (with a switch) to separate both scenePopulator and which geometry is debugged.
+
+- Animation & destruction :
+loose joint detection (when a joint is cut, eg. by destructive geometry),
+    both for bones animation calculation, and to determine how destroyed a mesh is.
+
+explore - sdf proposition - SDF functions will now return a 
+    vector from the geometry toward the point (non-normalized normal) instead of the distance.
+
+- see if it is possible to scale easily in x or y direction to make the slash sharper have approximately a sword shape
+    (though the capsule borders would not be, this is a detail).
+
+- Debug view : similarity by (pixel)proximity 
+    (this could be a convolution pass appliable on all debug views, especially useful for "Iteration" views).
+
+- Collision detection + Position,Velocity update
+    - Cast through space, linear, and bended for bended motions, for that, velocity alone isn't enough anymore
+
+- interactive spawn system, spawn/destroy on runtime with mouse & keyboard
+
+- implicit remeshing of triangles meshes with a limited set of sdf volumes.
+    - exporting meshes
+    - loading meshes
+
+- Sound simulation
+    eg. Smth goes near an ear at high speed, it should generate sound depending on air friction.
+    sound frequency should change depending on which material collides, and how much energy is dissipated.
+
+------------------------------------- Volumetric rendering -------------------------------------
+
+Volume_SDF : to implement a non-stepped version (not realy good knowing it delays all threads of a block)
+or do an approximation of a stepped version with fewer pixels 1 for each 4*4 pixels, with a prepass then interpolated
+
+Volumetry should possibly be rendered separately as a post processing effect.
+
+
+VolumeSDF computation cannot just give back one id because multiple volumes can overlap, find a way to combine
+multiple volumes, knowing there are certainly some volumes that push each other, some other that pull each other,
+some blend homogenously or do not and stay heterogenous in the volume.

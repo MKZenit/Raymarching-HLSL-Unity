@@ -1,0 +1,181 @@
+
+- triangle sdf & sdf_normal (negative in the back) ?
+    - eg. for VFX particles
+
+Liquid deformation
+- find a way to make local deformations so that a destructive geometry 
+    also create an additive geometry on the opposite side of the geometry.
+    - Pour un matériaux qui n'est pas suffisamment rigide, celui-ci s'enfonce 
+      d'un coté et se bombe de l'autre lorsqu'une contrainte suffisante est appliquée.
+    - Use a smooth maximum / smooth minimum for elastic deformations
+
+SphericCone_SDF & TriPrism_SDF : 
+idea : a lot of spheric cone will use the same angle, hence a precomputation for those values could be usefull.
+Possible to optimize considering some constant values for cosine and sine
+and try to reduce the following function for those cases (constants could be used for averagely significant stabs)
+    - eg. for VFX, instead of working with structs, work with an Id referencing static datas such as cut dimensions.
+        + position & rotation, those are not modifiable. 
+        This would do 8 x sizeof(float), instead of at least 12 x sizeof(float)
+
+- When creating cuts, verify that those does not override some other cuts, 
+    otherwise replace them or combine depending on proximity 
+
+- Use Octahedron non exact bound for less important stabs & depending on distance
+
+- shall take into account the various other optimizations 
+    - sphere encapsulation test should enlarge or lessen depending on deformation.
+
+- for the geometry to not disapear, its simpler encapsulation geometries shall also be deformed the same way.
+    - for slow geometries, it is possible to not lose too much computation sorting it, 
+        if the encapsulation tests already include it for multiple frames based on velocity
+
+- For a large cut that will create a rotation point : duplicate the cut geometries, each side will be cut a certain way :
+    let's assume the cut has an intersection plan where no geometry of one side is attached to the other side :
+    deuplicate the cut geometry then subtract the other side of the intersection plan.
+    Degradations of both sides should be the same, no referencing because rotation and position are not the same anyways.
+
+
+----------------------------- Realistic Stabs --------------------------
+
+Stabs either scratch surface, either pierce it,
+for piercing a whole body, then use a cylinder.
+This change would both make "piercing" more impactful, and more optimized
+    (if cylinder is more efficiently computed than SphericCone) .
+- add cylinder sdf and sdf_normal.
+- x scaling to make a stab sharper depending on the blade
+    - to apply both on Cylinder and TriPrism
+
+What is necessary for realistic destructive collisions :
+- Subtracting geometries (if a box hit something the destructive shape will approximately be this of a box).
+- Particles (dust, crumbling tiny rocks, etc...)(VFX).
+- Motion in between frames (eg.blur).
+- Cracks (can be generated mathematically, but necessitate a general method to be rendered, such as relaxation factor among others)
+- Deformations : destruction isn't neet and exactly the shape of its collider (bending, squishing(very important, also for realistic motion), etc...)
+- Sound (simulated sound is possible).
+
+----------------------------- Deformations functions -------------------------------
+implement functions such as Union / Difference / Intersection / SmoothMinimum / SmoothMaximum
+
+Octahedron_SDF(non exact) : Include this SDF for insignificant stabs
+Or instanciate small textures on UVs (decals).
+
+// Custom plane sdf for curved cuts
+float RevolutionPrism_SDF( float3 p, float3 n, float h )
+{
+    // n must be normalized
+    // plane distance : dot(p,n) + h
+    // linear distance falldown : // TODO
+    return dot(p,n) + h ;
+}
+
+For spells with incoherent/non reductible forms/topology
+// More flexibility for spells (fast computation)
+float3 Texture3D_SDF()
+{
+    return 0; // TODO
+}
+
+For high contributing curved slash :
+// RevolutionPrism_SDF Alternative : Bend function to apply on TriPrism_SDF
+float opCheapBend( in sdf3d primitive, in vec3 p )
+{
+    const float k = 10.0; // or some other amount
+    float c = cos(k*p.x);
+    float s = sin(k*p.x);
+    mat2  m = mat2(c,-s,s,c);
+    vec3  q = vec3(m*p.xy,p.z);
+    return primitive(q);
+}
+
+bending can be usefull for more realistic cuts, curved the same way the weapon slashes.
+
+
+// Transform (translation & rotation) - exact
+vec3 opTx( in vec3 p, in transform t, in sdf3d primitive )
+{
+    return primitive( invert(t)*p );
+}
+// Scale : to make TriPrism & Prism deeper depending on Strike length
+float opScale( in vec3 p, in float s, in sdf3d primitive )
+{
+    return primitive(p/s)*s;
+}
+
+
+// Octahedron - exact
+float sdOctahedron( vec3 p, float s )
+{
+    p = abs(p);
+    float m = p.x+p.y+p.z-s;
+    vec3 q;
+        if( 3.0*p.x < m ) q = p.xyz;
+    else if( 3.0*p.y < m ) q = p.yzx;
+    else if( 3.0*p.z < m ) q = p.zxy;
+    else return m*0.57735027;
+    
+    float k = clamp(0.5*(q.z-q.y+s),0.0,s); 
+    return length(vec3(q.x,q.y-s+k,q.z-k)); 
+}
+
+float Octahedron_SDF( float3 position, Strike strike) // not exact
+{
+    float3 p = abs(position-strike.position);
+    return (p.x+p.y+p.z- strike.width )*0.57735027;
+}
+
+// To create SDF particles 
+float opDisplace( in sdf3d primitive, in vec3 p )
+{
+    float d1 = primitive(p);
+    float d2 = displacement(p);
+    return d1+d2;
+}
+
+
+----------------------------------- Fusion functions -----------------------------------
+
+implement functions such as Union / Difference / Intersection / SmoothMinimum / SmoothMaximum
+
+float Intersection_SDF( float domain, float evaluate ) {  return max(domain,evaluate); }
+float Xor_SDF( float domain, float evaluate ) { return max(min(domain,evaluate),-max(domain,evaluate)); }
+
+float Round_SDF( in float evaluate, in float rad ) { return evaluate - rad; }
+
+float SmoothUnion_SDF( float domain, float evaluate, float k )
+{
+    k *= 4.0;
+    float h = max(k-abs(evaluate-domain),0.0);
+    return min(evaluate, domain) - h*h*0.25/k;
+}
+float SmoothSubtraction_SDF( float domain, float evaluate, float k )
+{
+    //k *= 4.0;
+    // float h = max(k-abs(-evaluate-domain),0.0);
+    // return max(-evaluate, domain) + h*h*0.25/k;
+    return -SmoothUnion_SDF(domain,-evaluate,k);
+}
+float SmoothIntersection_SDF( float domain, float evaluate, float k )
+{
+    //k *= 4.0;
+    // float h = max(k-abs(d1-d2),0.0);
+    // return max(d1, d2) + h*h*0.25/k;
+    return -SmoothUnion_SDF(-domain,-evaluate,k);
+}
+
+float3 Transform_Point( in float3 p, in Transform t) { return mul(t.mat,float4(p.xyz,0)).xyz; }
+// float Scale( in float3 p, in float primitive ) { return primitive(p/s)*s; }
+float3 LimitedRepetition_Point( in float3 p, in float s, in float3 l) { return p - s*clamp(round(p/s),-l,l); }
+
+float Displace_SDF( float distanceGeometry, float displacementGeometry ) { return distanceGeometry+displacementGeometry; }
+float3 Twist_Point( in float3 position, float k )
+{
+    float2 cs = QuadraticApproximation_CosSine(k*position.y);
+    float2x2 m = float2x2(cs.x,-cs.y,cs.y,cs.x);
+    return float3(mul(m,position.xz),position.y);
+}
+float3 CheapBend_Point(in float3 position, float k )
+{
+    float2 cs = QuadraticApproximation_CosSine(k*position.x);
+    float2x2 m = float2x2(cs.x,-cs.y,cs.y,cs.x);
+    return float3(mul(m,position.xy),position.z);
+}

@@ -1,0 +1,83 @@
+#pragma kernel CSLight
+
+#include "libs/geometry/GeometryPrimitives.cginc"
+#include "libs/geometry/GeometryBuffers.cginc"
+#include "libs/geometry/GeometryType.cginc"
+#include "libs/sdf/Sdf.cginc"
+#include "libs/sdf/SdfNormal.cginc"
+#include "libs/sdf/SdfBlend.cginc"
+#include "libs/math/MathUtils.cginc"
+#include "libs/Constants.cginc"
+#include "libs/FieldBuffers.cginc"
+#include "libs/CameraProperties.cginc"
+
+// --------------------------------- Light parameters -----------------------------------
+
+const float3 _directionalLightDirection;
+
+const float3 _directionalLightDiffuseColor;
+const float _directionalLightDiffusePower;
+
+const float3 _directionalLightSpecularColor;
+const float _directionalLightSpecularPower;
+
+const float _lightingSpecularHardness;
+
+// --------------------------------- Light Kernel ---------------------------------------
+
+[numthreads(16, 16, 1)]
+void CSLight(uint3 id : SV_DispatchThreadID)
+{
+    float3 cameraRelativeThreadPosition = normalize(float3(id.x - 0.5 * RenderTextureSize.x, id.y - 0.5 * RenderTextureSize.y, (RenderTextureSize.x + RenderTextureSize.y) * 0.25));
+    float3 rayDirection = normalize(cameraRelativeThreadPosition.x * CameraVectorX + cameraRelativeThreadPosition.y * CameraVectorY + cameraRelativeThreadPosition.z * CameraVectorZ * CameraFov);
+    
+    float4 resultColor;
+    float pixelDepth = DepthTexSRV[id.xy];
+    float3 pixelNormal = 2 * NormalTexSRV[id.xy] - 1;
+    
+    
+    float3 ambientLighting, directLighting;
+    if (pixelDepth > _maxDistanceThreshold - 0.1)
+    {
+        ambientLighting = float3(0, 0, 0);
+        directLighting = float3(0, 0, 0);
+    }
+    else
+    {
+        const float3 directionalLightPosition = -normalize(_directionalLightDirection) * 1000;
+        
+        float3 projectedPixelPosition = rayDirection * pixelDepth;
+        
+        // NOTE : Do not take distance into account for directional light
+        //float3 lightDir = _directionalLightPosition - projectedPixelPosition; 
+        float3 lightDir = normalize(directionalLightPosition - projectedPixelPosition);
+		
+        float distance = length(lightDir);
+        lightDir = lightDir / distance; // = normalize(lightDir);
+        distance = distance * distance;
+
+		//Intensity of the diffuse light. Saturate to keep within the 0-1 range.
+        float NdotL = dot(pixelNormal, lightDir);
+        float diffuseIntensity = saturate(NdotL);
+
+		// Calculate the diffuse light factoring in light color, power and the attenuation
+        float3 diffuseLighting = diffuseIntensity * _directionalLightDiffusePower / distance;
+
+		//Calculate the half vector between the light vector and the view vector.
+        float3 halfVector = normalize(lightDir + rayDirection);
+
+		//Intensity of the specular light
+        float NdotH = dot(pixelNormal, halfVector);
+        float specularIntensity = pow(saturate(NdotH), _lightingSpecularHardness);
+
+		//Sum up the specular light factoring
+        float specularLighting = specularIntensity * _directionalLightSpecularPower / distance;
+        
+        // float angleFresnel = 1 - min(1, abs(dot(pixelNormal, rayDirection)));
+        // float angleLightSurface = dot(pixelNormal, directionSurfaceLight);
+        // float angularIntensity = dot(rayDirection, directionSurfaceLight);
+        
+        directLighting = diffuseLighting * _directionalLightDiffuseColor + specularLighting * _directionalLightSpecularColor;
+    }
+    Result[id.xy] = float4(float3(1, 1, 1) * (directLighting + ambientLighting), 0);
+}

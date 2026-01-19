@@ -1,0 +1,258 @@
+----------------------------- further ideas ---------------------------------
+
+- Are Volumes compatible with Cone projection culling ?
+
+- optimizations based on screen contribution ?
+eg.
+replacing sdfs when contribution is little.
+- a slash can be substitued to a box rotated by 45° (cheap), fair approximation
+- cylinder or elongated box for stabs
+or replace with decals.
+
+VFX particles & search structure :
+    TODO after : for VFX particles, colors can be stored in a buffer and be read depending on a single float "t" parameter, to blend between colors depending on the particle type.
+    public static class ParticlesBuffers
+    {
+        public const string Particles = nameof(Particles);
+    }
+    public static class StructuralBuffers
+    {
+        // each node stores an encapsulating ellipsoid (position, rotation, scale) // and as a precomputation step, a distance to the nearest empty space in the structure.
+        // geometryType and ID are stored in each leaf of the structure and permit to access the actual geometry in geometry buffers, the first bit indicates if it is a leaf or a node.
+        public const string BoundingEllipsoidHierarchy = nameof(BoundingEllipsoidHierarchy);
+    }
+
+----------------------- Explore ---------------------
+
+- ray Reprojection for temporal coherence/optimization, considering a same pixel has very high chances to be in the screen once again.
+
+-------------------------------- search structure --------------------------------
+
+--------------------------------------------------------------------
+From here excellent distanceSDF convergence but expensive search O(N)
+Loses a lot of performances for a lot of geometries, then use a search structure with O(log(N)) search time
+(in a general way no more than 32 verifications in base 2, depending on how optimal is the search structure configuration)
+------------------------------------------------------------------------------------------
+
+A goal for a search structure here is to step little by little while not taking the whole scene into account, 
+    only paquets of it.
+
+- Get from github an implementation of a BVH
+    - make sure that it has good performances on dynamic scenes.
+
+- Debug : Show BVH bounding volumes.
+
+- Problem to consider with sphere encapsulation :
+    it can create differences in performance in a spheric patern on the screen, which is far from ideal for threadGroups
+    dispatches in order to end in the same time.
+
+- Scale of 2/p = 0.636 between a surface covered by a sphere and the same one covered by a square, for a same edge/radius.
+    - Hence to cover a square of pixels, a cone would project 1/(2/p) = 1/0.636 = 46.34% more pixels than which are projected.
+    - For first iterations that step for more pixels, this is more impactful than for later iterations where fast computation is 
+        prioritized over efficient computation.
+
+- In case the scene is very dense and does not fit entierely in the cache (which is very probable)
+    then instead of loading again all the scene when subdividing again and again,
+    - only load higher levels of the BVH nodes until a certain number of nodes max.
+        do subdivide when the camera is included in those BVH subdivisions otherwise there won't be any stepping (empty space skipping).
+
+Explore : Spheric vs Cylindric vs Elliptic volumes for the following search structure.
+    It should be ellipsoid volume, the most versatile, especially for elongated geometries like box.
+    
+UPDATE : do use approximated ellipsoid volume instead of sphere volume
+    ADVANTAGES : much more precise elongated volumes, later can be parameterized in multiple ways, can be scaled freely...
+    EQUATION : averaged distance of two points, minus half the distance between those points.
+
+- BSH construction :
+    no need for optimal construction, especially for small geometries.
+    - eg. combine with the closest relevant geometry
+    if this geometry is already occupied,
+        either search another to combine with
+        either combine with it considering a higher level encapsulation
+        when adding geometry, consider this previous statement, there may be 
+            near geometries combining alone with a higher level encapsulation
+
+- do only compute the actual sdf when close enough from the enclosing sphere
+    otherwise only compute a sphere distance
+    condition : some constant multiplied by the enclosing sphere radius.
+    computation : distance check only enclosing sphere, not the actual sdf.
+
+- BSH traversal :
+    - Check recursively if an encapsulation volume is the closest.
+        1st idea - when subdividing, if the encapsulation volume is now the second closest 
+            then subdivide the other encapsulation volume that is now the closest.
+        2nd idea - compute the current subdivision sdf for the encapsulation volume 
+            if it skips "enough" empty space to be pertinent. then when the volume is close "enough",
+                subdivide further and continue.
+            - even with encapsulating volume, it is certainly possible to use enhanced sphere tracing.
+
+search structure :
+CPU preprocessing then GPU preprocessing before raymarching for every pixels :
+goal : reduce the most the number of latent threads due to iterations differences
+how : detailed in GIMP (raymarching optimization) => recursive screen subdivision
+
+1 - Recursive frustum culling on CPU side 
+    (necessitate to also store a search structure on CPU side, which can be very costly in RAM memory)
+    ( otherwise do a very approximated implementation with heuristics instead, to save memory )
+    subdivide the screen in 32 parts for that step, send those 32 distances to the GPU.
+2 - then Recursive cone (or frustum) culling on GPU side
+
+main preprocessing idea :
+0 - make a geometry that englobes all pixels position of this subdivision in the scene
+        (if it englobes all 4 extremes of that subdivision then it englobes all pixels).
+1 - if does collide with the scene immediatly then subdivide otherwise project this geometry in the scene
+        to calculate its SDF.
+2 - step ahead bounds of the subdivision and iterate
+
+last pass :
+0 - compute raymarching on 1 ray on the middle of each paquet of pixels 4x4 or 8x8 (for higher resolution).
+1 - take information from that ray to facilitate the paquet processing,
+     eg. which volumes are traversed, which geometry is hit.
+     to prevent edges blocks to have a conditionnal access to neighbours, an additional ray will approximate
+     an evaluation out of the frustum bound in each direction, the 2D array will be a little larger,
+     and indexes for the stage 2 will be added 1 in x and y in order to compensate larger bounds.
+2 - evaluate each pixels paquet considering no other geometry than hit geometry(a little extreme) by neighbour paquet 
+    evaluation (groupshared). the main objective here isn't to get realistic result but the fewer steps difference in 
+    threads of a same block. so that the block is liberated faster.
+
+- While evaluating, manage an ID toward the current BSH subdivision, to start back to that subdivision instead of searching again
+that position (which would certainly nullify part of that optimization).
+
+BSH : Temporal adaptative sphere radius :
+    sphere radius chosen depending on particle speed(velocity)(for slow speeds only, because enclosing sphere would bcome too big otherwise),
+    size, deformation and screen & scene contributions to be updated the least time possible while conserving efficient culling,
+    it can enclose eg. ~10 frames of movement, in order to not be updated every frames.
+
+Temporal consistency :
+    From a frame to the next one, most of the time, there are a lot of similar elements.
+    Camera position does not move more than velocity (which is usually not very large because of player disorientation problems).
+    Camera rotation can be set a limit with smoothing, without cancelling the rotation but smoothing it across frames.
+        ( this could be a pain for high sensitivity players)
+    Camera FOV does not vary more than what Camera physics does.
+
+Spatial consistency :
+    recast considering the next geometry is approximately the same as for now.
+    hence search in a way that is optimized in this context.
+
++ always a second static sphere enclosing test that is independant from the search structure in order to cull a lot more pixels since the updated sphere
+can be much larger than the actual geometry when this geometry is moving fast, due to previous optimization.
+
+
+- Decals & search structure :
+    Tiny degradations can be stored as a decal, with a Boundary Surface Hierarchy search structure to determine which decals intersect 
+    with each other.
+    As so, those won't be part of the sphere tracing search, but after it hits a surface, it will be part of the texturing process.
+
+VFX & search structure :
+    It is possible to make large geometries store inverse distance while keeping low memory struct on tiny geometries,
+    separating both geometries. beware divergence or store inverse distance for every geometries, considering 
+    those geometries are in moderate number for large solid geometries.
+    A specific kernel can be implemented for particles, using different techniques considering only tinier & very dynamic geometries.
+    It would write a pixel depending on the distance read from evaluation rays and weither or not a VFX particle is closer than said geometry.
+    evaluation rays above 2x2 for particles are unnecessary because particles are in general tiny, so filling in between rays will not come out great and
+    those may cause artifacts or particles not appearing.
+    Mostly static part of the scene can be computed apart too (unanimated scene,
+    still dynamic because handles movement and deformations but most does not most of the time)
+
+    In opposition, are 2x2 evaluation rays realy usefull for larger geometries ?
+    4x4 evaluation rays are certainly much better.
+    normal interpolation will apply correctly on spheres, but box will not be interpolated but conditionned to same normals, test with 4x4 evaluation rays first.
+
+----- refine/resume those early dev ideas -----
+
+Combining paquets of pixels :
+Get threads to be grouped by their divergence in order to limit computation time overhead due to divergence
+(edges of geometries causes divergence because rays in a same group either hit the geometry either search further in the search structure,
+this second case actually also delays the first case due to GPU threads not handling divergence efficiently).
+Search structure divergence => Smaller thread group size (less rays impacted by divergence).
+Evaluation rays are evaluated to determine a displacement stored for each thread group, whose starts computing at this specific index.
+A buffer of the size of the screen divided by 2 (in each dimension), can easily store those displacements.
+If it causes the computation to be memory limited then abort or change this method.
+If neighbours evaluation rays hit the same geometry then it can be considered that the group size at least includes every pixels between them,
+hence 2x2 pixels.
+Extending this reasoning to 4x4 evaluation rays, it would not be needed to evaluate further because divergence would be almost zero anyways,
+8x8 and 16x16 paquet size are also to be considered.
+With this method it would not even be necessary to evaluate further than the current evaluation ray if all nearby evaluation rays hit the same
+convex/concave geometry.
+Hence all evaluation rays should write to the same buffer, then pixels thread would read only from that buffer, informations about hit geometry.
+
+NOTE : it possible to dispatch thousands of compute shaders each frame, there could be a way to implement the previous optimization dispatching 
+at most log(n)² times.
+For example, depending on the screen resolution, there could be more divergence for lower resolution (because rays are then more separate),
+hence using smaller group size. Oppositely to higher resolution which have less resolution, it can be usefull to vary group size depending on that fact.
+If using displacement with an approximated number of threads groups then there will be some left threads with no work to do.
+(however those will end at the same time with a single verification, hence not much of an overhead)
+It could be a great optimization to call dispaches according to loaded memory.
+    eg. if only 64x64 pixels can load their datas in the L1 cache then calling those 64x64 pixels in the same time
+    (calling each thread group size according to the current optimization), then memory access would still be coalesced.
+    how much datas can be loaded in a SM : 48 KB, 64 KB or 96 KB
+    respectively divided per 32x32 : datas per pixel : 48B, 64B, 96B
+    reference : float => 32 bits => 4B : hence nb of floats : 12, 21, 32
+    for a 64x64 (divide per 4): nb of floats : 2, 5, 8
+    Minimum nb of floats storable : 32x32 => 12, 64x64 => 2
+    2 floats : distance & search structure id ?
+    those are shared among at least 2x2 pixels, hence 1 {float id} redirects toward a shared data {distance, ss id}
+    hence : 2x2 * 2 = 8 versus 2x2 * 1 + 2 = 6
+    though it necessitates one more memory redirection, it is still coalescing.
+    in fact 1 more uint, to store displacement of the pixels paquet.
+    one last available ... either a safety check or usefull datas.
+----------------------------------------------------------------------------------
+
+Best optimizations after relaxation factors will be :
+    1 - search structure distance based (creation, update, deletion, search)
+    2 - recursive screen subdivision preprocessing (need for a more complex test setup)
+        (CPU frustum (2 iter. => 16) - GPU distance)
+    3 - using their respective subdivision preprocessed safe empty distance,
+        ray evaluation per pixel paquets to determine hit geometries per group of pixels,
+        remember closest convex geometries over iterations in iteration order (what iteration they were encountered)
+        (a modified version of sphere tracing that does not just step from the closest distance, but considers the minimum
+        distance that englobe the whole pixel-paquet-frustum depending on distance; because this is not only about one ray,
+        but preprocessing the whole pixel-paquet-frustum)
+        (the strategy can change depending on distance since the geometry becomes larger and larger,
+        however since the pixel paquets should be small, the frustum size should stay moderate)
+        (GPU)
+    4 - iterate over all pixels using their respective ray evaluation
+
+for alonged boxes : use other approximation methods, multiple spheres ?, cylinder ?...
+at least the sphere encapsulation test becomes more and more meaningless when a box's axe(s) is exagerated compared to the others.
+however most other geometries also include rotation, even a second sphere test would be less consuming.
+however, AABB box can serve as an encapsulation test for an OBB box.
+
+Btw, are encapsulation test realy meaningfull ?
+=> if the geometry is close no : just iterate closer, it will fastly converge/diverge
+=> if the geometry is far : it would possibly englobe much more geometries to search for farther geometry.
+=> if few geometries are close and a lot are distant :
+    then excluding the closest geometry fastly can permit to step much longer distance.
+=> evenly parsed geometries : may lead to a lot of useless tests if the context is computed as the above context.
+
+=> realy usefull situation : direct collision test with spheres
+    eg. CPU preprocessing or GPU evaluation rays : 
+    eg2. recursive sphere encapsulation. 
+=> every approximated test : especially when rotations are quite consuming, better exclude most obvious ones.
+    if the search structure isn't efficient enough.
+=> primitive fast collision approximation :
+    => if positive then test more precisely
+    => if negative then either skip the geometry either advance to the largest safe distance.
+    eg. 1-find all(just some when distances alone can't tell which is collided) closest possible triangles
+        2-fast sphere collision approximation : 
+        => if positive then later accept
+        => if negative then skip
+        3-if there is only one accepted triangle then the safe distance is the distance to the farthest vertice
+          otherwise there is multiple accepted triangle then 
+
+Could be replaced with simple recursive sphere (approximated)distance check.
+
+
+after doing a ray evaluation pass for 1 per 16x16 pixels, do a 1 per 4x4 pixels then 1 per 2x2 pixels, each using the previous iteration to speed up sphere tracing.
+Anyways the algorithm has to be computed hundreds of times even with all threads occpied.
+Hence the sequential part of the algorithm isn't the problem.
+Computation can still be optimized by preprocessing datas in a sequential way.
+16x16 pixels : which geometry is hit by the pixel group (not only the point)
+4x4 pixels : either per point or per pixel group sphere tracing (yet to be defined)
+2x2 pixels : per point, one ray for 4 pixels. ~x4 speed up.
+                principle : consider every geometry less than 2 pixels as unnecessary, hence all pixels between two 2x2 evaluation ray are hitting the same geometry
+                (linear interpolation using the 2x2 evaluation ray datas (normal, UV & others), texture still have to be read after UV interpolation).
+                (if hit a spherical surface then eventually use some kind of quadratic interpolation).
+                a 2x2 ray evaluation either consider all 8 neighbours, or the ray is a corner pixel and only consider 3 neighbours to interpolate the 3 other pixels.
+                this approximation (interpolation) should only be a high resolution screen optimization.
+                I think this is the kind of the optimization tesselation algorithms does by consider pixels paquets 2x2.

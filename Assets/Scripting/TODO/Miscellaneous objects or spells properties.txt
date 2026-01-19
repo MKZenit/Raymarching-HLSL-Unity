@@ -1,0 +1,28 @@
+
+One tap makes a spell keep the same direction,
+    Keep the button down alignes the spell on the camera direction.
+
+Faire une vue pour la perception magique permettant de visualiser a_ travers les murs tous en en noir et blanc, hors la magie en couleur
+    (hue en fonction de la propriete [gris clair pour les magies inertes], saturity en fonction de la distance, value en fonction de la densite/quantite
+    Tester une ScriptableRendererPass (et la difference entre ScriptableRendererFeature) pour passer dynamiquement d'une vue perception magique a_ une vue normal.
+
+    - Some ennemies do not have mana and rely entierely on physical abilities, some other can hide their mana more or less efficiently.
+
+- Implement motion blur :
+Test linear movements then circular movements, eg. A spll that charges by rotating faster and faster as it gets closer to the center.
+    Could be a delayed bomb, or a loading launcher.
+
+----------------------------------- Spells ideas ------------------------------------
+
+Volumetric walls with properties such as high magic density => spell enhancement, or spell reflection, etc...
+
+An attack that releases mana disorder as it both destroys a lot more but then heal back those damages,
+kind of fake damages but under some conditions, the result stays (for example if those damages destroy a mana core,
+this mana core remains destroyed though physical damages are restored, his soul is considered gone forever, or shattered).
+
+An attack that restores strikes and blows to former state (not before the moment it starts being loaded,
+because this is the moment cuts and strikes will start being stored datas on their former state, otherwise it 
+would be computationnaly heavy).
+physical damages of all hit entities restaured to a former state, that can be double faced :
+can heal allies but also ennemies, can restaure damage status(eg.corrosion) on ennemies but also allies.
+
