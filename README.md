@@ -1,5 +1,5 @@
 # Raymarching-HLSL-Unity
-Preparation for a game made with raymarching. Allowing a more mathematically than artistically described world.
+Preparation for a game made with raymarching. Allowing a more mathematical than artistical world description.
 Let's experiment on how performant a raymarching algorithm can be in more and more similar situations than what is to come for the game.
 
 distance calculation : 
@@ -7,11 +7,11 @@ distance calculation :
   then refined and optimized for efficient computing
 
 normal calculation :
-  no general methode, specific to each implicit geometry type
-  computes once the normal instead of 6 sdfs.
+  no general method, specific to each implicit geometry type
+  computes once the normal instead of 6 sdfs, with higher precision.
 
 debug modes :
-  various views to debug the geometry.
+  various views to debug functionalities and gain insight over functionalities interactions.
 
 # Installation guide :
 
