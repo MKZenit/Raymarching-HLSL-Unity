@@ -15,8 +15,8 @@ debug modes :
 
 # Installation guide :
 
-Install Unity Hub : https://unity.com/download .
-Launch Unity Hub and install a newer Unity 6 version.
-Create a new project with this version of Unity.
-Replace the "Assets" folder from this project with this repository's one.
-Open "Assets/Scenes/SampleScene.Unity".
+- Install Unity Hub : https://unity.com/download .
+- Launch Unity Hub and install a newer Unity 6 version.
+- Create a new project with this version of Unity.
+- Replace the "Assets" folder from this project with this repository's one.
+- Open "Assets/Scenes/SampleScene.Unity".
