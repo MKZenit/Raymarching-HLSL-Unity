@@ -1,6 +1,6 @@
 # Raymarching-HLSL-Unity
-Preparation for a game made with raymarching. Allowing a more mathematical than artistical world description.
-Let's experiment on how performant a raymarching algorithm can be in more and more similar situations than what is to come for the game.
+Preparation for a further project made with raymarching. Allowing a more mathematical than artistical world description.
+Let's experiment on how performant a raymarching algorithm can be in more and more similar situations than what is to come for said project.
 
 - distance calculation : 
   - Most primitive SDFs are from this site : https://iquilezles.org/articles/distfunctions
